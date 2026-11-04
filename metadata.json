@@ -1,0 +1,6 @@
+{
+  "name": "AQUA MATH ADVENTURE – SAVE AQUA CITY!",
+  "description": "AQUA MATH ADVENTURE – SAVE AQUA CITY! · 3D Educational Adventure Game. Jelajahi dunia 3D Aqua City, selesaikan 10 lokasi misi matematika, dan selamatkan persediaan air kota!",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
