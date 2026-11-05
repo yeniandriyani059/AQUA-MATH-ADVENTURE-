@@ -500,7 +500,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   htmlFor="teacher-username"
                   className="block text-xs font-bold text-cyan-100 mb-1"
                 >
-                  Username Guru
+                  Email / Username Guru
                 </label>
                 <input
                   id="teacher-username"
@@ -508,7 +508,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   required
                   value={usernameInput}
                   onChange={(e) => setUsernameInput(e.target.value)}
-                  placeholder="Masukkan username guru..."
+                  placeholder="Masukkan email atau username guru..."
                   className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
                 />
               </div>

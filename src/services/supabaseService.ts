@@ -190,15 +190,62 @@ export async function adminAddSingleStudent(
   pinCode?: string,
   characterId: CharacterId = 'sinta',
 ): Promise<{ ok: boolean; student?: any; message?: string }> {
+  const cleanedName = String(name || '').trim().replace(/\s+/g, ' ');
+  if (cleanedName.length < 2) {
+    return { ok: false, message: 'Nama siswa minimal 2 huruf.' };
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const now = new Date().toISOString();
+      const normUsername = cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      const newStudentId = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const emptyProfile = createEmptyStudentProfile(newStudentId, cleanedName, characterId);
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from('student_profiles')
+        .insert({
+          id: newStudentId,
+          auth_user_id: null,
+          name: cleanedName,
+          username: normUsername,
+          normalized_name: normUsername,
+          character_id: characterId,
+          solo_data: emptyProfile.solo,
+          championship_data: emptyProfile.championship,
+          created_at: now,
+          last_active_at: now,
+        })
+        .select()
+        .single();
+
+      if (!insertErr && inserted) {
+        return {
+          ok: true,
+          student: inserted,
+          message: `Siswa "${cleanedName}" berhasil ditambahkan ke Kelas 5!`,
+        };
+      }
+      if (insertErr) {
+        return { ok: false, message: `Gagal menambahkan siswa ke Supabase: ${insertErr.message}` };
+      }
+    } catch (e: any) {
+      return { ok: false, message: e?.message || 'Kesalahan saat menyimpan siswa ke Supabase.' };
+    }
+  }
+
   try {
-    const token = sessionStorage.getItem('aqua_math_admin_token_v1') || sessionStorage.getItem('aqua_admin_token') || '';
+    const token =
+      sessionStorage.getItem('aqua_math_admin_token_v1') ||
+      sessionStorage.getItem('aqua_admin_token') ||
+      '';
     const res = await fetch('/api/admin/students', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ name, pinCode, characterId }),
+      body: JSON.stringify({ name: cleanedName, pinCode, characterId }),
     });
     const result = await res.json();
     if (res.ok && result.ok) {
@@ -217,15 +264,66 @@ export async function adminAddBatchStudents(
   names: string[],
   characterId: CharacterId = 'sinta',
 ): Promise<{ ok: boolean; count?: number; message?: string }> {
+  const validNames = (names || [])
+    .map((rawName) => String(rawName).trim().replace(/\s+/g, ' '))
+    .filter((n) => n.length >= 2);
+
+  if (validNames.length === 0) {
+    return { ok: false, message: 'Daftar nama siswa tidak valid.' };
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const now = new Date().toISOString();
+      const rowsToInsert = validNames.map((cleanedName, idx) => {
+        const normName = `${cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_${idx}`;
+        const uid = `stu_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 5)}`;
+        const emptyProfile = createEmptyStudentProfile(uid, cleanedName, characterId);
+        return {
+          id: uid,
+          auth_user_id: null,
+          name: cleanedName,
+          username: normName,
+          normalized_name: normName,
+          character_id: characterId,
+          solo_data: emptyProfile.solo,
+          championship_data: emptyProfile.championship,
+          created_at: now,
+          last_active_at: now,
+        };
+      });
+
+      const { data: insertedList, error: insertErr } = await supabase
+        .from('student_profiles')
+        .insert(rowsToInsert)
+        .select();
+
+      if (!insertErr) {
+        const count = insertedList?.length || rowsToInsert.length;
+        return {
+          ok: true,
+          count,
+          message: `Berhasil menambahkan ${count} siswa baru ke Kelas 5!`,
+        };
+      }
+      return { ok: false, message: `Gagal menambah daftar siswa ke Supabase: ${insertErr.message}` };
+    } catch (e: any) {
+      return { ok: false, message: e?.message || 'Kesalahan saat menyimpan daftar siswa ke Supabase.' };
+    }
+  }
+
   try {
-    const token = sessionStorage.getItem('aqua_math_admin_token_v1') || sessionStorage.getItem('aqua_admin_token') || '';
+    const token =
+      sessionStorage.getItem('aqua_math_admin_token_v1') ||
+      sessionStorage.getItem('aqua_admin_token') ||
+      '';
     const res = await fetch('/api/admin/students', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ names, characterId }),
+      body: JSON.stringify({ names: validNames, characterId }),
     });
     const result = await res.json();
     if (res.ok && result.ok) {
@@ -243,8 +341,23 @@ export async function adminAddBatchStudents(
 export async function adminDeleteStudent(
   studentId: string,
 ): Promise<{ ok: boolean; message?: string }> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from('student_profiles').delete().eq('id', studentId);
+      if (!error) {
+        return { ok: true, message: 'Data siswa berhasil dihapus.' };
+      }
+      return { ok: false, message: `Gagal menghapus siswa: ${error.message}` };
+    } catch (e: any) {
+      return { ok: false, message: e?.message || 'Gagal menghapus data siswa.' };
+    }
+  }
+
   try {
-    const token = sessionStorage.getItem('aqua_math_admin_token_v1') || sessionStorage.getItem('aqua_admin_token') || '';
+    const token =
+      sessionStorage.getItem('aqua_math_admin_token_v1') ||
+      sessionStorage.getItem('aqua_admin_token') ||
+      '';
     const res = await fetch(`/api/admin/students/${studentId}`, {
       method: 'DELETE',
       headers: {
