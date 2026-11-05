@@ -23,6 +23,7 @@ import {
   ShieldCheck,
   Trophy,
   UserCheck,
+  UserPlus,
   Users,
 } from 'lucide-react';
 import { CHARACTERS, LEVELS, MISSION_LOCATIONS } from '../data/locations';
@@ -38,6 +39,9 @@ import {
   saveClassSettings,
 } from '../services/gameStorage';
 import {
+  adminAddBatchStudents,
+  adminAddSingleStudent,
+  adminDeleteStudent,
   flushOfflineSyncQueue,
   getTeacherDashboardData,
   resetStudentPasswordByTeacher,
@@ -1610,103 +1614,181 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
           )}
 
-          {/* TAB 7: STUDENT ACCOUNTS & PASSWORD RESET */}
+          {/* TAB 7: KELOLA ROSTER SISWA KELAS 5 */}
           {activeTab === 'accounts' && (
             <div className="space-y-4">
               <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="text-base font-bold font-['Fredoka'] text-white flex items-center gap-2">
-                    <ShieldCheck className="w-5 h-5 text-yellow-300" />
-                    <span>Manajemen Akun Siswa & Pemulihan Password</span>
+                    <Users className="w-5 h-5 text-yellow-300" />
+                    <span>Daftar Roster & Kelola Siswa Kelas 5</span>
                   </h3>
                   <p className="text-xs text-cyan-200 mt-0.5">
-                    Guru dapat memverifikasi identitas siswa dan mereset password akun siswa. Seluruh riwayat skor dan progres tetap utuh.
+                    Guru dapat menambahkan siswa satu per satu, menempelkan daftar banyak siswa, mengedit PIN, dan mengelola daftar siswa Kelas 5.
                   </p>
                 </div>
 
-                <div className="relative w-full sm:w-64">
-                  <Search className="w-4 h-4 text-cyan-300 absolute left-3 top-2.5" />
-                  <input
-                    type="text"
-                    value={participantSearch}
-                    onChange={(e) => setParticipantSearch(e.target.value)}
-                    placeholder="Cari nama atau username..."
-                    className="w-full pl-9 pr-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/50 text-white text-xs font-bold focus:outline-none focus:border-yellow-400"
-                  />
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playClick();
+                      const rawName = prompt('Masukkan Nama Lengkap Siswa Kelas 5 Baru:');
+                      if (rawName && rawName.trim().length >= 2) {
+                        const pin = prompt('Masukkan 4 Angka PIN Siswa (Opsional / Kosongkan jika tidak ada):');
+                        adminAddSingleStudent(rawName, pin || undefined).then((res) => {
+                          if (res.ok) {
+                            loadRealSupabaseData();
+                            setStatusBanner(res.message || `Siswa ${rawName} berhasil ditambahkan!`);
+                          } else {
+                            alert(res.message || 'Gagal menambahkan siswa.');
+                          }
+                        });
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs border border-white cursor-pointer shadow-md"
+                  >
+                    <UserPlus className="w-4 h-4 stroke-[2.5]" />
+                    <span>+ Tambah 1 Siswa</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playClick();
+                      const rawList = prompt(
+                        'Tempelkan daftar nama siswa Kelas 5 (satu nama per baris):\nContoh:\nAhmad Rizky\nSiti Aminah\nBudi Santoso',
+                      );
+                      if (rawList && rawList.trim()) {
+                        const names = rawList
+                          .split('\n')
+                          .map((n) => n.trim())
+                          .filter((n) => n.length >= 2);
+                        if (names.length > 0) {
+                          adminAddBatchStudents(names).then((res) => {
+                            if (res.ok) {
+                              loadRealSupabaseData();
+                              setStatusBanner(res.message || `Berhasil menambahkan ${names.length} siswa baru!`);
+                            } else {
+                              alert(res.message || 'Gagal menambah daftar siswa.');
+                            }
+                          });
+                        }
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-['Fredoka'] font-bold text-xs border border-white cursor-pointer shadow-md"
+                  >
+                    <Users className="w-4 h-4 stroke-[2.5]" />
+                    <span>+ Tempel Banyak Nama (Batch)</span>
+                  </button>
+
+                  <div className="relative w-full sm:w-56">
+                    <Search className="w-4 h-4 text-cyan-300 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={participantSearch}
+                      onChange={(e) => setParticipantSearch(e.target.value)}
+                      placeholder="Cari siswa..."
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/50 text-white text-xs font-bold focus:outline-none focus:border-yellow-400"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-sky-900/90 text-cyan-200 uppercase font-bold text-[11px] border-b border-cyan-500/30">
-                      <tr>
-                        <th className="py-3 px-4">Siswa & Username</th>
-                        <th className="py-3 px-4">Karakter</th>
-                        <th className="py-3 px-4 text-center">Skor Solo Terbaik</th>
-                        <th className="py-3 px-4 text-center">Skor Championship</th>
-                        <th className="py-3 px-4 text-center">Status</th>
-                        <th className="py-3 px-4 text-center">Tindakan Pemulihan</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-cyan-500/20 text-cyan-100 font-semibold">
-                      {students
-                        .filter(
-                          (s) =>
-                            !participantSearch ||
-                            s.name.toLowerCase().includes(participantSearch.toLowerCase()) ||
-                            (s.username && s.username.toLowerCase().includes(participantSearch.toLowerCase())),
-                        )
-                        .map((student) => (
-                          <tr key={student.id} className="hover:bg-sky-900/40 transition-colors">
-                            <td className="py-3 px-4">
-                              <div className="font-bold text-white text-sm">{student.name}</div>
-                              <div className="text-[11px] text-yellow-300 font-mono">
-                                @{student.username || student.normalizedName}
-                              </div>
-                            </td>
-                            <td className="py-3 px-4">
-                              <div className="flex items-center gap-2">
-                                <CharacterAvatarSvg
-                                  characterId={student.characterId}
-                                  className="w-8 h-8 shrink-0"
-                                />
-                                <span className="font-bold text-white capitalize">
-                                  {CHARACTERS.find((c) => c.id === student.characterId)?.name}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="py-3 px-4 text-center font-mono font-bold text-yellow-300 tabular-nums">
-                              {student.solo?.bestTotalScore || 0} Poin
-                            </td>
-                            <td className="py-3 px-4 text-center font-mono font-bold text-cyan-300 tabular-nums">
-                              {student.championship?.totalChampionshipScore || 0} Poin
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-950 border border-emerald-400 text-emerald-300">
-                                <UserCheck className="w-3 h-3" /> Akun Terverifikasi
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  soundManager.playClick();
-                                  setResetTargetStudent(student);
-                                  setNewPasswordInput('');
-                                }}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs border border-white cursor-pointer shadow-md transition-transform active:scale-95"
-                              >
-                                <KeyRound className="w-3.5 h-3.5 stroke-[2.5]" />
-                                <span>Reset Password</span>
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
+              {students.length === 0 ? (
+                <div className="bg-sky-950 border-2 border-dashed border-cyan-500/40 rounded-3xl p-8 text-center space-y-3">
+                  <Users className="w-12 h-12 text-cyan-400/60 mx-auto" />
+                  <div>
+                    <h4 className="text-base font-bold font-['Fredoka'] text-white">
+                      Belum Ada Siswa Terdaftar di Kelas 5
+                    </h4>
+                    <p className="text-xs text-cyan-200 mt-1 max-w-md mx-auto">
+                      Gunakan tombol <strong>"+ Tambah 1 Siswa"</strong> atau <strong>"+ Tempel Banyak Nama (Batch)"</strong> di atas untuk mendaftarkan nama siswa Kelas 5 milikmu!
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-sky-900/90 text-cyan-200 uppercase font-bold text-[11px] border-b border-cyan-500/30">
+                        <tr>
+                          <th className="py-3 px-4">Nama Siswa</th>
+                          <th className="py-3 px-4">Karakter</th>
+                          <th className="py-3 px-4 text-center">Skor Solo Terbaik</th>
+                          <th className="py-3 px-4 text-center">Skor Championship</th>
+                          <th className="py-3 px-4 text-center">Status Akses</th>
+                          <th className="py-3 px-4 text-center">Kelola & Hapus</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-cyan-500/20 text-cyan-100 font-semibold">
+                        {students
+                          .filter(
+                            (s) =>
+                              !participantSearch ||
+                              s.name.toLowerCase().includes(participantSearch.toLowerCase()) ||
+                              (s.username && s.username.toLowerCase().includes(participantSearch.toLowerCase())),
+                          )
+                          .map((student) => (
+                            <tr key={student.id} className="hover:bg-sky-900/40 transition-colors">
+                              <td className="py-3 px-4">
+                                <div className="font-bold text-white text-sm">{student.name}</div>
+                                <div className="text-[11px] text-cyan-300 font-mono">
+                                  ID: {student.id}
+                                </div>
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="flex items-center gap-2">
+                                  <CharacterAvatarSvg
+                                    characterId={student.characterId}
+                                    className="w-8 h-8 shrink-0"
+                                  />
+                                  <span className="font-bold text-white capitalize">
+                                    {CHARACTERS.find((c) => c.id === student.characterId)?.name}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-4 text-center font-mono font-bold text-yellow-300 tabular-nums">
+                                {student.solo?.bestTotalScore || 0} Poin
+                              </td>
+                              <td className="py-3 px-4 text-center font-mono font-bold text-cyan-300 tabular-nums">
+                                {student.championship?.totalChampionshipScore || 0} Poin
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-950 border border-emerald-400 text-emerald-300">
+                                  <UserCheck className="w-3 h-3" /> Siap Bermain
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      soundManager.playClick();
+                                      if (confirm(`Hapus siswa "${student.name}" dari Kelas 5?`)) {
+                                        adminDeleteStudent(student.id).then((res) => {
+                                          if (res.ok) {
+                                            loadRealSupabaseData();
+                                            setStatusBanner(`Siswa "${student.name}" berhasil dihapus.`);
+                                          } else {
+                                            alert(res.message || 'Gagal menghapus siswa.');
+                                          }
+                                        });
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-rose-950 hover:bg-rose-900 border border-rose-400/80 text-rose-200 text-xs font-bold cursor-pointer"
+                                  >
+                                    Hapus
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

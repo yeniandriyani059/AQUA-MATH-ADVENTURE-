@@ -119,7 +119,13 @@ export async function flushOfflineSyncQueue(): Promise<{ syncedCount: number; re
  */
 export async function verifyClassAccessCode(
   accessCode: string,
-): Promise<{ ok: boolean; message?: string; className?: string }> {
+): Promise<{
+  ok: boolean;
+  message?: string;
+  className?: string;
+  teacherName?: string;
+  students?: Array<{ id: string; name: string; username: string; characterId: CharacterId; hasPin: boolean }>;
+}> {
   if (!accessCode || !accessCode.trim()) {
     return { ok: false, message: 'Kode Akses Kelas wajib diisi.' };
   }
@@ -134,38 +140,124 @@ export async function verifyClassAccessCode(
     });
     if (res.ok) {
       const data = await res.json();
-      return { ok: data.ok, className: data.className, message: data.message };
+      return {
+        ok: data.ok,
+        className: data.className,
+        teacherName: data.teacherName,
+        students: data.students || [],
+        message: data.message,
+      };
     }
     const errData = await res.json().catch(() => ({}));
     return { ok: false, message: errData.message || 'Kode Akses Kelas tidak sesuai. Mohon tanyakan ke Guru!' };
   } catch {
-    // Fallback direct check if backend server endpoint is unreachable
-    if (isSupabaseConfigured && supabase) {
-      try {
-        const { data, error } = await supabase
-          .from('class_settings')
-          .select('*')
-          .eq('id', 'default_class')
-          .maybeSingle();
-
-        if (!error && data) {
-          if (!data.access_code_active) {
-            return { ok: false, message: 'Kode Akses Kelas sedang dinonaktifkan oleh Guru.' };
-          }
-          if (data.access_code.trim().toUpperCase() === cleanedCode) {
-            return { ok: true, className: data.class_name };
-          }
-          return { ok: false, message: 'Kode Akses Kelas tidak sesuai.' };
-        }
-      } catch {
-        // ignore
-      }
-    }
-
     if (cleanedCode === 'AQUA2026') {
-      return { ok: true, className: 'Kelas Petualang Aqua City' };
+      return { ok: true, className: 'Kelas 5 SD', teacherName: 'Guru Aqua City', students: [] };
     }
     return { ok: false, message: 'Kode Akses Kelas tidak sesuai. Mohon periksa kembali kode dari Guru!' };
+  }
+}
+
+/**
+ * Connects student to their selected Class 5 identity without requiring an individual email/password account.
+ */
+export async function selectStudentIdentity(
+  studentId: string,
+  characterId: CharacterId = 'sinta',
+  pinCode?: string,
+): Promise<{ ok: boolean; profile?: StudentProfile; message?: string }> {
+  try {
+    const res = await fetch('/api/student/select-identity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId, characterId, pinCode }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok && data.profile) {
+      return { ok: true, profile: data.profile, message: data.message };
+    }
+    return { ok: false, message: data.message || 'Gagal memilih nama siswa.' };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || 'Tidak dapat terhubung ke server.' };
+  }
+}
+
+/**
+ * Teacher Admin: Add Single Student to Class 5 Roster in Supabase.
+ */
+export async function adminAddSingleStudent(
+  name: string,
+  pinCode?: string,
+  characterId: CharacterId = 'sinta',
+): Promise<{ ok: boolean; student?: any; message?: string }> {
+  try {
+    const token = sessionStorage.getItem('aqua_math_admin_token_v1') || sessionStorage.getItem('aqua_admin_token') || '';
+    const res = await fetch('/api/admin/students', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ name, pinCode, characterId }),
+    });
+    const result = await res.json();
+    if (res.ok && result.ok) {
+      return { ok: true, student: result.student, message: result.message };
+    }
+    return { ok: false, message: result.message || 'Gagal menambahkan siswa.' };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || 'Gagal terhubung ke server.' };
+  }
+}
+
+/**
+ * Teacher Admin: Add Bulk Batch Students to Class 5 Roster in Supabase.
+ */
+export async function adminAddBatchStudents(
+  names: string[],
+  characterId: CharacterId = 'sinta',
+): Promise<{ ok: boolean; count?: number; message?: string }> {
+  try {
+    const token = sessionStorage.getItem('aqua_math_admin_token_v1') || sessionStorage.getItem('aqua_admin_token') || '';
+    const res = await fetch('/api/admin/students', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ names, characterId }),
+    });
+    const result = await res.json();
+    if (res.ok && result.ok) {
+      return { ok: true, count: result.count, message: result.message };
+    }
+    return { ok: false, message: result.message || 'Gagal menambah daftar siswa.' };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || 'Gagal terhubung ke server.' };
+  }
+}
+
+/**
+ * Teacher Admin: Delete Student from Class 5 Roster in Supabase.
+ */
+export async function adminDeleteStudent(
+  studentId: string,
+): Promise<{ ok: boolean; message?: string }> {
+  try {
+    const token = sessionStorage.getItem('aqua_math_admin_token_v1') || sessionStorage.getItem('aqua_admin_token') || '';
+    const res = await fetch(`/api/admin/students/${studentId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const result = await res.json();
+    if (res.ok && result.ok) {
+      return { ok: true, message: result.message };
+    }
+    return { ok: false, message: result.message || 'Gagal menghapus data siswa.' };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || 'Gagal terhubung ke server.' };
   }
 }
 

@@ -80,23 +80,13 @@ app.post('/api/admin/register', async (req, res) => {
   const sb = await getSupabaseClient();
   if (sb) {
     try {
-      // 1. Check existing in teacher_profiles table
-      const { data: existingProf } = await sb
-        .from('teacher_profiles')
-        .select('id, username')
-        .eq('username', normUsername)
-        .maybeSingle();
-
-      if (existingProf) {
-        res.status(400).json({
-          ok: false,
-          message: `Username guru "${normUsername}" sudah terdaftar. Silakan pilih username lain atau lakukan Login!`,
-        });
-        return;
-      }
-
-      // 2. Create user account in Supabase Authentication
+      // 1. Check existing in Supabase Authentication (via email derived from username)
       const teacherEmail = `tch_${normUsername}@aquamath.org`;
+      
+      // We'll skip the profile table check and go straight to Auth creation/sign-in.
+      // If the user already exists in Auth, we can handle it.
+      
+      // 2. Create user account in Supabase Authentication
       let authUser: any = null;
       let authErrorMsg: string | null = null;
 
@@ -150,53 +140,24 @@ app.post('/api/admin/register', async (req, res) => {
       const now = new Date().toISOString();
       const newTeacherId = `tch_${authUserId}`;
 
-      const teacherPayload: Record<string, any> = {
+      const teacherPayload = {
         id: newTeacherId,
         auth_user_id: authUserId,
-        name: cleanedName,
         display_name: cleanedName,
-        username: normUsername,
         role: 'teacher',
-        championship_data: null,
         created_at: now,
-        last_active_at: now,
       };
 
-      let { data: insertedProf, error: insertErr } = await sb
+      const { data: insertedProf, error: insertErr } = await sb
         .from('teacher_profiles')
-        .insert(teacherPayload)
+        .upsert(teacherPayload, { onConflict: 'id' })
         .select()
         .maybeSingle();
 
-      // Retry with core fields if schema cache rejects optional columns
-      if (insertErr && insertErr.message.includes('column')) {
-        const coreTeacherPayload = {
-          id: newTeacherId,
-          auth_user_id: authUserId,
-          name: cleanedName,
-          display_name: cleanedName,
-          username: normUsername,
-          last_active_at: now,
-        };
-        const retryRes = await sb
-          .from('teacher_profiles')
-          .insert(coreTeacherPayload)
-          .select()
-          .maybeSingle();
-
-        if (!retryRes.error) {
-          insertedProf = retryRes.data;
-          insertErr = null;
-        }
-      }
-
       if (insertErr) {
-        // Rollback created Auth user if profile insertion failed
-        await sb.auth.admin.deleteUser(authUserId).catch(() => null);
-
         res.status(500).json({
           ok: false,
-          message: `Akun autentikasi terbuat, tetapi profil gagal disimpan di teacher_profiles: ${insertErr.message}`,
+          message: `Akun autentikasi berhasil dibuat, tetapi profil gagal disimpan di teacher_profiles: ${insertErr.message}`,
         });
         return;
       }
@@ -255,26 +216,37 @@ app.post('/api/admin/login', async (req, res) => {
         return;
       }
 
-      // 2. Query teacher_profiles by auth_user_id or username
-      const { data: profile, error: profileErr } = await sb
-        .from('teacher_profiles')
-        .select('*')
-        .or(`auth_user_id.eq.${authData.user.id},username.eq.${normUser}`)
-        .maybeSingle();
-
-      const teacherName = profile?.name || authData.user.user_metadata?.name || 'Ibu/Bapak Guru';
       const now = new Date().toISOString();
 
-      if (profile?.id) {
-        await sb.from('teacher_profiles').update({ last_active_at: now }).eq('id', profile.id);
+      // 2. Query teacher_profiles by auth_user_id
+      const { data: profile } = await sb
+        .from('teacher_profiles')
+        .select('*')
+        .eq('auth_user_id', authData.user.id)
+        .maybeSingle();
+
+      // 3. Recovery Logic: If profile missing, create it from Auth metadata
+      if (!profile) {
+        const recoverName = authData.user.user_metadata?.name || authData.user.user_metadata?.display_name || 'Ibu/Bapak Guru';
+        const recoverPayload = {
+          id: `tch_${authData.user.id}`,
+          auth_user_id: authData.user.id,
+          display_name: recoverName,
+          role: 'teacher',
+          created_at: authData.user.created_at || now,
+        };
+        
+        await sb.from('teacher_profiles').upsert(recoverPayload, { onConflict: 'id' });
       }
 
+      const finalProfile = profile || { display_name: authData.user.user_metadata?.name || 'Ibu/Bapak Guru' };
+      const teacherName = finalProfile.display_name || 'Ibu/Bapak Guru';
       const token = createAdminToken(normUser);
       res.json({
         ok: true,
         token,
         teacherName,
-        username: profile?.username || normUser,
+        username: normUser,
         authUserId: authData.user.id,
       });
       return;
@@ -340,7 +312,7 @@ async function getSupabaseClient() {
   return null;
 }
 
-// Server-side access code verification endpoint for students
+// Server-side access code verification & Class 5 Roster List for students
 app.post('/api/student/verify-access', async (req, res) => {
   const { accessCode } = req.body || {};
   if (!accessCode) {
@@ -359,314 +331,163 @@ app.post('/api/student/verify-access', async (req, res) => {
         .eq('id', 'default_class')
         .maybeSingle();
 
-      if (!error && data) {
-        if (!data.access_code_active) {
-          res.status(403).json({ ok: false, message: 'Kode Akses Kelas sedang nonaktif. Mohon hubungi Guru!' });
-          return;
-        }
-        if (data.access_code.trim().toUpperCase() === cleanedCode) {
-          res.json({ ok: true, className: data.class_name, teacherName: data.teacher_name });
-          return;
-        } else {
-          res
-            .status(401)
-            .json({ ok: false, message: 'Kode Akses Kelas tidak sesuai. Mohon periksa kembali kode dari Guru!' });
-          return;
-        }
+      const validCode = data?.access_code
+        ? data.access_code.trim().toUpperCase()
+        : (process.env.DEFAULT_CLASS_ACCESS_CODE || 'AQUA2026').trim().toUpperCase();
+
+      if (data && !data.access_code_active) {
+        res.status(403).json({ ok: false, message: 'Kode Akses Kelas sedang ditutup oleh Guru.' });
+        return;
+      }
+
+      if (cleanedCode === validCode) {
+        // Fetch enrolled Class 5 student roster list from student_profiles
+        const { data: roster, error: rosterErr } = await sb
+          .from('student_profiles')
+          .select('id, name, username, character_id, pin_code')
+          .order('name', { ascending: true });
+
+        const students = (roster || []).map((s) => ({
+          id: s.id,
+          name: s.name,
+          username: s.username || s.id,
+          characterId: s.character_id || 'sinta',
+          hasPin: Boolean(s.pin_code),
+        }));
+
+        res.json({
+          ok: true,
+          className: data?.class_name || 'Kelas 5 SD',
+          teacherName: data?.teacher_name || 'Ibu/Bapak Guru Kelas 5',
+          students,
+        });
+        return;
+      } else {
+        res.status(401).json({ ok: false, message: 'Kode Akses Kelas tidak sesuai. Mohon tanyakan ke Guru!' });
+        return;
       }
     } catch {
-      // Fallback below
+      // Fallback
     }
   }
 
-  // Fallback default access code check
   const defaultCode = (process.env.DEFAULT_CLASS_ACCESS_CODE || 'AQUA2026').trim().toUpperCase();
   if (cleanedCode === defaultCode) {
-    res.json({ ok: true, className: 'Kelas Petualang Aqua City', teacherName: 'Guru Aqua City' });
+    res.json({
+      ok: true,
+      className: 'Kelas 5 SD',
+      teacherName: 'Guru Aqua City',
+      students: [],
+    });
   } else {
     res.status(401).json({ ok: false, message: 'Kode Akses Kelas tidak sesuai. Mohon tanyakan ke Guru!' });
   }
 });
 
-// Student Permanent Account Registration (Username + Password)
-app.post('/api/student/register', async (req, res) => {
-  const { accessCode, name, username, password, confirmPassword, characterId } = req.body || {};
+// Student Identity Selection (No email/password account required!)
+app.post('/api/student/select-identity', async (req, res) => {
+  const { studentId, characterId, pinCode } = req.body || {};
 
-  if (!accessCode || !name || !username || !password || !characterId) {
-    res.status(400).json({ ok: false, message: 'Seluruh kolom pendaftaran wajib diisi.' });
-    return;
-  }
-
-  const cleanedCode = String(accessCode).trim().toUpperCase();
-  const normUsername = String(username).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-  const cleanedName = String(name).trim().replace(/\s+/g, ' ');
-
-  if (normUsername.length < 3) {
-    res.status(400).json({
-      ok: false,
-      message: 'Username minimal 3 karakter (hanya huruf, angka, dan garis bawah).',
-    });
-    return;
-  }
-
-  if (String(password).length < 6) {
-    res.status(400).json({ ok: false, message: 'Password minimal 6 karakter demi keamanan akun.' });
-    return;
-  }
-
-  if (password !== confirmPassword) {
-    res.status(400).json({ ok: false, message: 'Konfirmasi password tidak cocok dengan password.' });
+  if (!studentId) {
+    res.status(400).json({ ok: false, message: 'Pilih nama siswamu terlebih dahulu.' });
     return;
   }
 
   const sb = await getSupabaseClient();
   if (sb) {
     try {
-      // 1. Verify access code against class_settings
-      const { data: settings } = await sb
-        .from('class_settings')
+      const { data: studentRow, error } = await sb
+        .from('student_profiles')
         .select('*')
-        .eq('id', 'default_class')
+        .eq('id', studentId)
         .maybeSingle();
 
-      const expectedCode = settings?.access_code
-        ? settings.access_code.trim().toUpperCase()
-        : (process.env.DEFAULT_CLASS_ACCESS_CODE || 'AQUA2026').toUpperCase();
-
-      if (settings && !settings.access_code_active) {
-        res.status(403).json({ ok: false, message: 'Kode Akses Kelas sedang ditutup oleh Guru.' });
+      if (error || !studentRow) {
+        res.status(404).json({ ok: false, message: 'Data siswa tidak ditemukan di database.' });
         return;
       }
 
-      if (cleanedCode !== expectedCode) {
-        res.status(401).json({ ok: false, message: 'Kode Akses Kelas salah.' });
-        return;
-      }
-
-      // 2. Check if username already exists in student_profiles
-      const { data: existingUser } = await sb
-        .from('student_profiles')
-        .select('id, name, username')
-        .or(`username.eq.${normUsername},normalized_name.eq.${normUsername}`)
-        .maybeSingle();
-
-      if (existingUser) {
-        res.status(400).json({
-          ok: false,
-          message: `Username "${normUsername}" sudah terdaftar. Silakan pilih username lain atau lakukan Login!`,
-        });
-        return;
-      }
-
-      // 3. Create user in Supabase Auth using internal mapping email
-      const internalEmail = `${normUsername}@aquamath.org`;
-      let authUserId = `auth_${Date.now()}_${normUsername}`;
-
-      // Attempt admin creation first
-      const adminRes = await sb.auth.admin.createUser({
-        email: internalEmail,
-        password: String(password),
-        email_confirm: true,
-        user_metadata: { name: cleanedName, username: normUsername },
-      }).catch(() => null);
-
-      if (adminRes?.data?.user) {
-        authUserId = adminRes.data.user.id;
-      } else {
-        // Fallback standard signup
-        const signUpRes = await sb.auth.signUp({
-          email: internalEmail,
-          password: String(password),
-          options: { data: { name: cleanedName, username: normUsername } },
-        }).catch(() => null);
-
-        if (signUpRes?.data?.user) {
-          authUserId = signUpRes.data.user.id;
+      // Verify optional student PIN code if set
+      if (studentRow.pin_code && String(studentRow.pin_code).trim() !== '') {
+        const expectedPin = String(studentRow.pin_code).trim();
+        const providedPin = String(pinCode || '').trim();
+        if (providedPin !== expectedPin) {
+          res.status(401).json({ ok: false, message: 'PIN Siswa tidak cocok. Silakan minta bantuan Guru!' });
+          return;
         }
       }
 
-      // 4. Create row in student_profiles
-      const newStudentId = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const now = new Date().toISOString();
+      const updatedChar = characterId || studentRow.character_id || 'sinta';
 
-      const initialSolo = {
-        unlockedLevel: 1,
-        academicGrade: 'A',
-        bestTotalScore: 0,
-        latestTotalScore: 0,
-        locations: {},
-      };
-
-      const initialChampionship = {
-        unlockedLevel: 1,
-        academicGrade: 'A',
-        totalChampionshipScore: 0,
-        locations: {},
-      };
-
-      const studentPayload: Record<string, any> = {
-        id: newStudentId,
-        auth_user_id: authUserId,
-        name: cleanedName,
-        username: normUsername,
-        normalized_name: normUsername,
-        character_id: characterId,
-        created_at: now,
-        last_active_at: now,
-        championship_data: null,
-      };
-
-      // Try inserting core profile data into student_profiles table
-      let { data: inserted, error: insertErr } = await sb
+      await sb
         .from('student_profiles')
-        .insert(studentPayload)
-        .select()
-        .single();
+        .update({ character_id: updatedChar, last_active_at: now })
+        .eq('id', studentId);
 
-      // Fallback if solo_data column exists and insert succeeded or needed retry
-      if (insertErr && insertErr.message.includes('column')) {
-        // Attempt with minimal core fields
-        const minimalPayload = {
-          id: newStudentId,
-          auth_user_id: authUserId,
-          name: cleanedName,
-          username: normUsername,
-          character_id: characterId,
-        };
-        const retryRes = await sb
-          .from('student_profiles')
-          .insert(minimalPayload)
-          .select()
-          .single();
-        if (!retryRes.error && retryRes.data) {
-          inserted = retryRes.data;
-          insertErr = null;
-        }
-      }
-
-      if (insertErr) {
-        res.status(500).json({ ok: false, message: `Gagal membuat profil siswa di Supabase: ${insertErr.message}` });
-        return;
-      }
+      const initialSolo = { unlockedLevel: 1, academicGrade: 'A', bestTotalScore: 0, latestTotalScore: 0, locations: {} };
+      const initialChampionship = { unlockedLevel: 1, academicGrade: 'A', totalChampionshipScore: 0, locations: {} };
 
       const profile = {
-        id: inserted?.id || newStudentId,
-        name: inserted?.name || cleanedName,
-        username: inserted?.username || normUsername,
-        normalizedName: inserted?.normalized_name || normUsername,
-        characterId: inserted?.character_id || characterId,
-        createdAt: inserted?.created_at || now,
-        lastActiveAt: inserted?.last_active_at || now,
-        solo: inserted?.solo_data || initialSolo,
-        championship: initialChampionship,
+        id: studentRow.id,
+        name: studentRow.name,
+        username: studentRow.username || studentRow.normalized_name,
+        normalizedName: studentRow.normalized_name,
+        characterId: updatedChar,
+        createdAt: studentRow.created_at || now,
+        lastActiveAt: now,
+        solo: studentRow.solo_data || initialSolo,
+        championship: studentRow.championship_data || initialChampionship,
       };
 
-      res.json({ ok: true, profile, message: 'Akun siswa berhasil dibuat! Selamat berpetualang!' });
+      res.json({ ok: true, profile, message: `Selamat berpetualang, ${profile.name}!` });
       return;
     } catch (e: any) {
-      res.status(500).json({ ok: false, message: `Kesalahan server: ${e?.message || 'Database error'}` });
+      res.status(500).json({ ok: false, message: `Gagal memuat profil siswa: ${e?.message}` });
       return;
     }
   }
 
-  // Fallback local memory / storage response if Supabase not configured
-  const newStudentId = `stu_${Date.now()}`;
-  const profile = {
-    id: newStudentId,
-    name: cleanedName,
-    username: normUsername,
-    normalizedName: normUsername,
-    characterId,
-    createdAt: new Date().toISOString(),
-    lastActiveAt: new Date().toISOString(),
-    solo: { unlockedLevel: 1, academicGrade: 'A', bestTotalScore: 0, latestTotalScore: 0, locations: {} },
-    championship: { unlockedLevel: 1, academicGrade: 'A', totalChampionshipScore: 0, locations: {} },
-  };
-
-  res.json({ ok: true, profile, message: 'Akun siswa berhasil dibuat!' });
+  res.status(400).json({ ok: false, message: 'Database Supabase tidak terhubung.' });
 });
 
-// Student Permanent Account Login (Username + Password via Supabase Auth)
-app.post('/api/student/login', async (req, res) => {
-  const { username, password } = req.body || {};
+// Teacher Admin: Fetch Roster List of Class 5 Students
+app.get('/api/admin/students', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const authCheck = verifyAdminToken(token);
 
-  if (!username || !password) {
-    res.status(400).json({ ok: false, message: 'Username dan password wajib diisi.' });
+  if (!authCheck.valid) {
+    res.status(401).json({ ok: false, message: 'Sesi guru tidak valid.' });
     return;
   }
 
-  const normUsername = String(username).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-  const internalEmail = `${normUsername}@aquamath.org`;
   const sb = await getSupabaseClient();
-
   if (sb) {
     try {
-      // 1. Authenticate against Supabase Auth
-      const { data: authData, error: authError } = await sb.auth.signInWithPassword({
-        email: internalEmail,
-        password: String(password),
-      });
+      const { data, error } = await sb
+        .from('student_profiles')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-      if (authError && authError.message.includes('Invalid login credentials')) {
-        res.status(401).json({
-          ok: false,
-          message: 'Username atau password siswa tidak sesuai. Mohon periksa kembali!',
-        });
+      if (error) {
+        res.status(500).json({ ok: false, message: error.message });
         return;
       }
 
-      // 2. Fetch student profile from student_profiles by auth_user_id or username
-      let profileQuery = sb.from('student_profiles').select('*');
-      if (authData?.user?.id) {
-        profileQuery = profileQuery.or(`auth_user_id.eq.${authData.user.id},username.eq.${normUsername},normalized_name.eq.${normUsername}`);
-      } else {
-        profileQuery = profileQuery.or(`username.eq.${normUsername},normalized_name.eq.${normUsername}`);
-      }
-
-      const { data: profileRow, error: profileErr } = await profileQuery.maybeSingle();
-
-      if (profileErr || !profileRow) {
-        res.status(404).json({
-          ok: false,
-          message: 'Profil siswa tidak ditemukan. Pastikan Anda sudah mendaftarkan akun.',
-        });
-        return;
-      }
-
-      // Update last_active_at timestamp
-      const now = new Date().toISOString();
-      await sb.from('student_profiles').update({ last_active_at: now }).eq('id', profileRow.id);
-
-      const profile = {
-        id: profileRow.id,
-        name: profileRow.name,
-        username: profileRow.username || normUsername,
-        normalizedName: profileRow.normalized_name,
-        characterId: profileRow.character_id,
-        createdAt: profileRow.created_at,
-        lastActiveAt: now,
-        solo: profileRow.solo_data,
-        championship: profileRow.championship_data,
-      };
-
-      res.json({
-        ok: true,
-        profile,
-        token: authData?.session?.access_token || 'session_active',
-        message: `Selamat datang kembali, ${profile.name}!`,
-      });
+      res.json({ ok: true, students: data || [] });
       return;
     } catch (e: any) {
-      res.status(500).json({ ok: false, message: `Gagal proses login: ${e?.message}` });
+      res.status(500).json({ ok: false, message: e?.message });
       return;
     }
   }
 
-  res.status(400).json({ ok: false, message: 'Supabase Database belum terhubung.' });
+  res.json({ ok: true, students: [] });
 });
 
-// Teacher Admin: Reset Student Password
-app.post('/api/admin/reset-student-password', async (req, res) => {
+// Teacher Admin: Add Single or Bulk Batch Students to Class 5
+app.post('/api/admin/students', async (req, res) => {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   const authCheck = verifyAdminToken(token);
@@ -676,61 +497,245 @@ app.post('/api/admin/reset-student-password', async (req, res) => {
     return;
   }
 
-  const { studentId, username, newPassword } = req.body || {};
+  const { name, names, characterId, pinCode } = req.body || {};
+  const sb = await getSupabaseClient();
 
-  if ((!studentId && !username) || !newPassword) {
-    res.status(400).json({ ok: false, message: 'Username/ID siswa dan Password Baru wajib diisi.' });
+  if (!sb) {
+    res.status(400).json({ ok: false, message: 'Database Supabase belum terhubung.' });
     return;
   }
 
-  if (String(newPassword).length < 6) {
-    res.status(400).json({ ok: false, message: 'Password baru minimal 6 karakter.' });
+  try {
+    const now = new Date().toISOString();
+    const initialSolo = { unlockedLevel: 1, academicGrade: 'A', bestTotalScore: 0, latestTotalScore: 0, locations: {} };
+    const initialChampionship = { unlockedLevel: 1, academicGrade: 'A', totalChampionshipScore: 0, locations: {} };
+
+    // Batch insertion if multiple names provided
+    if (Array.isArray(names) && names.length > 0) {
+      const rowsToInsert = names
+        .map((rawName) => String(rawName).trim().replace(/\s+/g, ' '))
+        .filter((n) => n.length >= 2)
+        .map((cleanedName) => {
+          const normName = cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+          const uid = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          return {
+            id: uid,
+            auth_user_id: null,
+            name: cleanedName,
+            username: normName,
+            normalized_name: normName,
+            character_id: characterId || 'sinta',
+            solo_data: initialSolo,
+            championship_data: initialChampionship,
+            created_at: now,
+            last_active_at: now,
+          };
+        });
+
+      if (rowsToInsert.length === 0) {
+        res.status(400).json({ ok: false, message: 'Daftar nama siswa tidak valid.' });
+        return;
+      }
+
+      const { data: insertedList, error: insertErr } = await sb
+        .from('student_profiles')
+        .insert(rowsToInsert)
+        .select();
+
+      if (insertErr) {
+        res.status(500).json({ ok: false, message: `Gagal menambah daftar siswa: ${insertErr.message}` });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        count: insertedList?.length || rowsToInsert.length,
+        message: `Berhasil menambahkan ${insertedList?.length || rowsToInsert.length} siswa baru ke Kelas 5!`,
+      });
+      return;
+    }
+
+    // Single student insertion
+    if (!name || String(name).trim().length < 2) {
+      res.status(400).json({ ok: false, message: 'Nama siswa minimal 2 huruf.' });
+      return;
+    }
+
+    const cleanedName = String(name).trim().replace(/\s+/g, ' ');
+    const normUsername = cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const newStudentId = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    const { data: inserted, error: insertErr } = await sb
+      .from('student_profiles')
+      .insert({
+        id: newStudentId,
+        auth_user_id: null,
+        name: cleanedName,
+        username: normUsername,
+        normalized_name: normUsername,
+        character_id: characterId || 'sinta',
+        pin_code: pinCode ? String(pinCode).trim() : null,
+        solo_data: initialSolo,
+        championship_data: initialChampionship,
+        created_at: now,
+        last_active_at: now,
+      })
+      .select()
+      .single();
+
+    if (insertErr) {
+      res.status(500).json({ ok: false, message: `Gagal menambahkan siswa: ${insertErr.message}` });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      student: inserted,
+      message: `Siswa "${cleanedName}" berhasil ditambahkan ke Kelas 5!`,
+    });
+    return;
+  } catch (e: any) {
+    res.status(500).json({ ok: false, message: `Gagal memproses data siswa: ${e?.message}` });
+    return;
+  }
+});
+
+// Teacher Admin: Update Student Name / PIN
+app.put('/api/admin/students/:id', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const authCheck = verifyAdminToken(token);
+
+  if (!authCheck.valid) {
+    res.status(401).json({ ok: false, message: 'Akses ditolak.' });
+    return;
+  }
+
+  const { id } = req.params;
+  const { name, pinCode, characterId } = req.body || {};
+  const sb = await getSupabaseClient();
+
+  if (!sb) {
+    res.status(400).json({ ok: false, message: 'Database tidak terhubung.' });
+    return;
+  }
+
+  try {
+    const updatePayload: Record<string, any> = { last_active_at: new Date().toISOString() };
+    if (name) {
+      updatePayload.name = String(name).trim().replace(/\s+/g, ' ');
+      updatePayload.normalized_name = String(name).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    }
+    if (pinCode !== undefined) {
+      updatePayload.pin_code = pinCode ? String(pinCode).trim() : null;
+    }
+    if (characterId) {
+      updatePayload.character_id = characterId;
+    }
+
+    const { data: updated, error } = await sb
+      .from('student_profiles')
+      .update(updatePayload)
+      .eq('id', id)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      res.status(500).json({ ok: false, message: error.message });
+      return;
+    }
+
+    res.json({ ok: true, student: updated, message: 'Data siswa berhasil diperbarui!' });
+    return;
+  } catch (e: any) {
+    res.status(500).json({ ok: false, message: e?.message });
+    return;
+  }
+});
+
+// Teacher Admin: Delete Student
+app.delete('/api/admin/students/:id', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const authCheck = verifyAdminToken(token);
+
+  if (!authCheck.valid) {
+    res.status(401).json({ ok: false, message: 'Akses ditolak.' });
+    return;
+  }
+
+  const { id } = req.params;
+  const sb = await getSupabaseClient();
+
+  if (!sb) {
+    res.status(400).json({ ok: false, message: 'Database tidak terhubung.' });
+    return;
+  }
+
+  try {
+    const { error } = await sb.from('student_profiles').delete().eq('id', id);
+    if (error) {
+      res.status(500).json({ ok: false, message: error.message });
+      return;
+    }
+
+    res.json({ ok: true, message: 'Data siswa berhasil dihapus.' });
+    return;
+  } catch (e: any) {
+    res.status(500).json({ ok: false, message: e?.message });
+    return;
+  }
+});
+
+// Secure Mission Score Attempt Saving Endpoint (No student Supabase Auth token required)
+app.post('/api/student/save-attempt', async (req, res) => {
+  const { studentId, mode, levelNumber, locationId, correctCount, wrongCount, durationSeconds, sessionId } = req.body || {};
+
+  if (!studentId || !locationId) {
+    res.status(400).json({ ok: false, message: 'Data percobaan permainan tidak lengkap.' });
     return;
   }
 
   const sb = await getSupabaseClient();
-  if (sb) {
-    try {
-      // 1. Locate student profile
-      let query = sb.from('student_profiles').select('*');
-      if (studentId) {
-        query = query.eq('id', studentId);
-      } else if (username) {
-        const norm = String(username).trim().toLowerCase();
-        query = query.or(`username.eq.${norm},normalized_name.eq.${norm}`);
-      }
-
-      const { data: student, error: findErr } = await query.maybeSingle();
-      if (findErr || !student) {
-        res.status(404).json({ ok: false, message: 'Siswa tidak ditemukan di database.' });
-        return;
-      }
-
-      const targetUsername = student.username || student.normalized_name;
-      const internalEmail = `${targetUsername}@aquamath.org`;
-
-      // 2. Update password in Supabase Auth
-      if (student.auth_user_id) {
-        await sb.auth.admin.updateUserById(student.auth_user_id, {
-          password: String(newPassword),
-        }).catch(() => null);
-      }
-
-      // Also ensure internal email login password updated
-      await sb.auth.admin.updateUserById(student.id, { password: String(newPassword) }).catch(() => null);
-
-      res.json({
-        ok: true,
-        message: `Password untuk siswa "${student.name}" (@${targetUsername}) berhasil diperbarui! Siswa dapat login kembali menggunakan password baru.`,
-      });
-      return;
-    } catch (e: any) {
-      res.status(500).json({ ok: false, message: `Gagal reset password: ${e?.message}` });
-      return;
-    }
+  if (!sb) {
+    res.json({ ok: true, syncedToSupabase: false, message: 'Database offline, hasil disimpan secara lokal.' });
+    return;
   }
 
-  res.json({ ok: true, message: 'Password siswa berhasil di-reset!' });
+  try {
+    const score = Math.min(100, Math.max(0, Number(correctCount || 0) * 10));
+    const now = new Date().toISOString();
+
+    const { data: attempt, error: attemptErr } = await sb
+      .from('game_attempts')
+      .insert({
+        student_id: studentId,
+        mode: mode === 'championship' ? 'championship' : 'solo',
+        championship_session_id: sessionId || null,
+        level_number: Number(levelNumber || Math.ceil(locationId / 2)),
+        location_id: Number(locationId),
+        correct_count: Number(correctCount || 0),
+        wrong_count: Number(wrongCount || 0),
+        score,
+        duration_seconds: Number(durationSeconds || 0),
+      })
+      .select()
+      .maybeSingle();
+
+    await sb.from('student_profiles').update({ last_active_at: now }).eq('id', studentId);
+
+    res.json({
+      ok: true,
+      syncedToSupabase: true,
+      score,
+      attemptId: attempt?.id,
+      message: 'Skor permainan berhasil tersimpan di Supabase!',
+    });
+    return;
+  } catch (e: any) {
+    res.json({ ok: true, syncedToSupabase: false, message: `Tersimpan secara lokal: ${e?.message}` });
+    return;
+  }
 });
 
 async function startServer() {
@@ -738,7 +743,11 @@ async function startServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { overlay: false },
+        watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
