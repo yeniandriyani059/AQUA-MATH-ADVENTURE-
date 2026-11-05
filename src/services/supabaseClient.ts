@@ -34,9 +34,20 @@ CREATE TABLE IF NOT EXISTS class_settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS teacher_profiles (
+  id TEXT PRIMARY KEY,
+  auth_user_id UUID NOT NULL,
+  name TEXT NOT NULL,
+  username TEXT UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_active_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS student_profiles (
   id TEXT PRIMARY KEY,
+  auth_user_id UUID,
   name TEXT NOT NULL,
+  username TEXT UNIQUE,
   normalized_name TEXT UNIQUE NOT NULL,
   character_id TEXT NOT NULL,
   solo_data JSONB NOT NULL DEFAULT '{}'::jsonb,

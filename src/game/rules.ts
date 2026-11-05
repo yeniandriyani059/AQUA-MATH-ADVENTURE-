@@ -97,10 +97,11 @@ export function isLocationUnlockedForProfile(
   locationId: number,
   mode: GameMode,
 ): boolean {
+  if (!profile) return false;
   const loc = MISSION_LOCATIONS.find((l) => l.id === locationId);
   if (!loc) return false;
   const unlockedLevel =
-    mode === 'solo' ? profile.solo.unlockedLevel : profile.championship.unlockedLevel;
+    mode === 'solo' ? profile.solo?.unlockedLevel || 1 : profile.championship?.unlockedLevel || 1;
   return loc.levelId <= unlockedLevel;
 }
 
@@ -172,6 +173,16 @@ export function applyMissionResultToProfile(
   const nextProfile: StudentProfile = JSON.parse(JSON.stringify(profile));
   nextProfile.lastActiveAt = nowIso;
 
+  if (!nextProfile.solo) {
+    nextProfile.solo = { locations: {}, latestTotalScore: 0, bestTotalScore: 0, academicGrade: 0, unlockedLevel: 1, completedLevels: [] };
+  }
+  if (!nextProfile.solo.locations) nextProfile.solo.locations = {};
+
+  if (!nextProfile.championship) {
+    nextProfile.championship = { locations: {}, totalChampionshipScore: 0, academicGrade: 0, totalTimeSeconds: 0, unlockedLevel: 1, completedLevels: [] };
+  }
+  if (!nextProfile.championship.locations) nextProfile.championship.locations = {};
+
   if (mode === 'solo') {
     const prevLoc = nextProfile.solo.locations[locationId];
     const bestScore = prevLoc
@@ -207,7 +218,7 @@ export function applyMissionResultToProfile(
     const completedSet = new Set(
       allSoloLocs.filter((item) => item.completed).map((item) => item.locationId),
     );
-    const prevUnlocked = nextProfile.solo.unlockedLevel;
+    const prevUnlocked = nextProfile.solo.unlockedLevel || 1;
     const { completedLevels, unlockedLevel } = computeLevelUnlockState(completedSet);
 
     nextProfile.solo.latestTotalScore = latestTotalScore;
@@ -243,9 +254,8 @@ export function applyMissionResultToProfile(
 
     return { updatedProfile: nextProfile, summary };
   } else {
-    // MODE: CLASS CHAMPIONSHIP (Strictly isolated from Solo Adventure!)
+    // MODE: CLASS CHAMPIONSHIP
     const prevChampLoc = nextProfile.championship.locations[locationId];
-    // Official Championship record: if already completed in current championship session, keep official first/best or update only if not locked
     const championshipScore = prevChampLoc
       ? Math.max(prevChampLoc.championshipScore, evalResult.pointsEarned)
       : evalResult.pointsEarned;
@@ -277,7 +287,7 @@ export function applyMissionResultToProfile(
     const completedSet = new Set(
       allChampLocs.filter((item) => item.completed).map((item) => item.locationId),
     );
-    const prevUnlocked = nextProfile.championship.unlockedLevel;
+    const prevUnlocked = nextProfile.championship.unlockedLevel || 1;
     const { completedLevels, unlockedLevel } = computeLevelUnlockState(completedSet);
 
     nextProfile.championship.totalChampionshipScore = totalChampionshipScore;
@@ -317,17 +327,16 @@ export function applyMissionResultToProfile(
 }
 
 /**
- * Builds the official Class Championship leaderboard.
- * Priority 1: championshipScore (higher is better)
- * Priority 2 (Tie-breaker only): totalTimeSeconds (lower is faster, only among players who have played)
+ * Builds the official Class Championship leaderboard safely without crashing.
  */
 export function buildChampionshipLeaderboard(students: StudentProfile[]): LeaderboardEntry[] {
+  if (!Array.isArray(students)) return [];
   const entries: Omit<LeaderboardEntry, 'rank' | 'isGrandChampion'>[] = students
-    .filter((s) => Object.keys(s.championship.locations).length > 0)
+    .filter((s) => s && s.championship?.locations && Object.keys(s.championship.locations).length > 0)
     .map((student) => {
-      const locs = student.championship.locations;
-      const completedLocationsCount = Object.values(locs).filter((l) => l.completed).length;
-      const completedLevelsCount = student.championship.completedLevels.length;
+      const locs = student.championship?.locations || {};
+      const completedLocationsCount = Object.values(locs).filter((l) => l?.completed).length;
+      const completedLevelsCount = student.championship?.completedLevels?.length || 0;
 
       const levelScores: Record<number, number> = {};
       for (const lvl of LEVELS) {
@@ -339,12 +348,12 @@ export function buildChampionshipLeaderboard(students: StudentProfile[]): Leader
         studentId: student.id,
         studentName: student.name,
         characterId: student.characterId,
-        championshipScore: student.championship.totalChampionshipScore,
-        academicGrade: student.championship.academicGrade,
+        championshipScore: student.championship?.totalChampionshipScore || 0,
+        academicGrade: student.championship?.academicGrade || 0,
         completedLocationsCount,
         completedLevelsCount,
-        totalTimeSeconds: student.championship.totalTimeSeconds,
-        medal: calculateMedal(student.championship.totalChampionshipScore, MAX_POINTS_ADVENTURE),
+        totalTimeSeconds: student.championship?.totalTimeSeconds || 0,
+        medal: calculateMedal(student.championship?.totalChampionshipScore || 0, MAX_POINTS_ADVENTURE),
         levelScores,
       };
     });
@@ -364,17 +373,19 @@ export function buildChampionshipLeaderboard(students: StudentProfile[]): Leader
 }
 
 /**
- * Finds the Level Champion for a specific level (1..5) in Class Championship mode.
+ * Finds the Level Champion for a specific level (1..5) in Class Championship mode safely.
  */
 export function getLevelChampion(
   students: StudentProfile[],
   levelId: number,
 ): { studentName: string; score: number; timeSeconds: number; characterId: CharacterId } | null {
+  if (!Array.isArray(students)) return null;
   const levelMeta = LEVELS.find((l) => l.id === levelId);
   if (!levelMeta) return null;
   const [locA, locB] = levelMeta.locationIds;
 
   const candidates = students
+    .filter((s) => s && s.championship?.locations)
     .map((s) => {
       const recA = s.championship.locations[locA];
       const recB = s.championship.locations[locB];

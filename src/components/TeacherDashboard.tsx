@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -13,11 +13,14 @@ import {
   Download,
   Eye,
   Filter,
+  KeyRound,
   Map,
   Medal,
+  RefreshCw,
   RotateCcw,
   Search,
   Settings,
+  ShieldCheck,
   Trophy,
   UserCheck,
   Users,
@@ -29,10 +32,16 @@ import {
   isTeacherAdminLoggedIn,
   loginTeacherAdmin,
   logoutTeacherAdmin,
+  registerTeacherAdmin,
   resetAllChampionshipScores,
   resetToDemoSeedData,
   saveClassSettings,
 } from '../services/gameStorage';
+import {
+  flushOfflineSyncQueue,
+  getTeacherDashboardData,
+  resetStudentPasswordByTeacher,
+} from '../services/supabaseService';
 import { isSupabaseConfigured, SUPABASE_SCHEMA_SQL } from '../services/supabaseClient';
 import { ClassSettings, StudentProfile } from '../types/game';
 import { soundManager } from '../utils/sound';
@@ -54,14 +63,28 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onCloseToTitle,
 }) => {
   const [authenticated, setAuthenticated] = useState<boolean>(isTeacherAdminLoggedIn());
+  const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
+  const [teacherNameInput, setTeacherNameInput] = useState('');
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const [activeTab, setActiveTab] = useState<
-    'monitoring' | 'controls' | 'assessments' | 'progress' | 'leaderboard' | 'database'
+    | 'monitoring'
+    | 'controls'
+    | 'assessments'
+    | 'progress'
+    | 'leaderboard'
+    | 'database'
+    | 'accounts'
   >('monitoring');
+
+  // Password reset modal state for teacher
+  const [resetTargetStudent, setResetTargetStudent] = useState<StudentProfile | null>(null);
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
 
   const [participantSearch, setParticipantSearch] = useState('');
   const [participantLevelFilter, setParticipantLevelFilter] = useState<number | 'all'>('all');
@@ -75,6 +98,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [sessionNameDraft, setSessionNameDraft] = useState(settings.championshipSessionName);
   const [classNameDraft, setClassNameDraft] = useState(settings.className);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const loadRealSupabaseData = async () => {
+    setIsRefreshing(true);
+    await flushOfflineSyncQueue().catch(() => {});
+    const data = await getTeacherDashboardData();
+    if (data.students && data.students.length > 0) {
+      onUpdateStudents(data.students);
+      setStatusBanner(`Data berhasil disinkronkan dari database Supabase! (${data.students.length} siswa, ${data.totalAttemptsCount} riwayat percobaan).`);
+    } else if (data.supabaseConnected) {
+      setStatusBanner('Terhubung ke Supabase. Belum ada data siswa tersimpan.');
+    }
+    setIsRefreshing(false);
+  };
+
+  useEffect(() => {
+    if (authenticated) {
+      loadRealSupabaseData();
+    }
+  }, [authenticated]);
 
   const leaderboard = buildChampionshipLeaderboard(students);
 
@@ -132,14 +175,50 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     setLoginError(null);
     setIsLoggingIn(true);
 
-    const res = await loginTeacherAdmin(usernameInput, passwordInput);
-    setIsLoggingIn(false);
-
-    if (res.ok) {
-      setAuthenticated(true);
-      setPasswordInput('');
-    } else {
-      setLoginError(res.message || 'Login gagal.');
+    try {
+      if (authTab === 'register') {
+        if (!teacherNameInput.trim()) {
+          setLoginError('Nama lengkap guru wajib diisi.');
+          return;
+        }
+        if (!usernameInput.trim()) {
+          setLoginError('Username guru wajib diisi.');
+          return;
+        }
+        if (passwordInput !== confirmPasswordInput) {
+          setLoginError('Konfirmasi password tidak cocok dengan password.');
+          return;
+        }
+        const res = await registerTeacherAdmin({
+          name: teacherNameInput,
+          username: usernameInput,
+          password: passwordInput,
+          confirmPassword: confirmPasswordInput,
+        });
+        if (res.ok) {
+          setAuthenticated(true);
+          setPasswordInput('');
+          setConfirmPasswordInput('');
+        } else {
+          setLoginError(res.message || 'Pendaftaran guru gagal. Silakan coba lagi.');
+        }
+      } else {
+        if (!usernameInput.trim() || !passwordInput) {
+          setLoginError('Username dan password guru wajib diisi.');
+          return;
+        }
+        const res = await loginTeacherAdmin(usernameInput, passwordInput);
+        if (res.ok) {
+          setAuthenticated(true);
+          setPasswordInput('');
+        } else {
+          setLoginError(res.message || 'Login guru gagal. Silakan periksa kembali username dan password.');
+        }
+      }
+    } catch (err: any) {
+      setLoginError(err?.message || 'Terjadi kesalahan sistem pada autentikasi guru.');
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -211,10 +290,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Login Dashboard Guru (Admin)"
+        aria-label="Portal Guru"
         className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-sky-950/90 pointer-events-auto"
       >
-        <div className="w-full max-w-md bg-sky-900 border-4 border-cyan-400 rounded-3xl shadow-2xl overflow-hidden">
+        <div className="w-full max-w-[500px] bg-sky-900 border-4 border-cyan-400 rounded-3xl shadow-2xl overflow-hidden my-auto">
+          {/* Header */}
           <div className="bg-sky-950 px-6 py-4 border-b border-cyan-500/40 flex items-center justify-between">
             <AquaLogoSvg compact className="h-10 w-auto" />
             <button
@@ -223,29 +303,86 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 soundManager.playClick();
                 onCloseToTitle();
               }}
-              className="px-3 py-1.5 rounded-xl bg-sky-800 hover:bg-sky-700 text-xs font-bold text-cyan-100 cursor-pointer"
+              className="px-3.5 py-1.5 rounded-xl bg-sky-800 hover:bg-sky-700 text-xs font-bold text-cyan-100 cursor-pointer border border-cyan-400/30"
             >
               Tutup
             </button>
           </div>
 
-          <form onSubmit={handleLoginSubmit} className="p-6 space-y-4">
+          {/* Tab Switcher: LOGIN GURU vs DAFTAR AKUN GURU */}
+          <div className="flex border-b border-cyan-500/30 bg-sky-950/60 p-1.5 gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                soundManager.playClick();
+                setAuthTab('login');
+                setLoginError(null);
+              }}
+              className={`flex-1 py-2 rounded-xl text-xs font-['Fredoka'] font-bold cursor-pointer transition-colors ${
+                authTab === 'login'
+                  ? 'bg-yellow-400 text-sky-950 shadow-md'
+                  : 'text-cyan-200 hover:bg-sky-900/60'
+              }`}
+            >
+              MASUK GURU
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                soundManager.playClick();
+                setAuthTab('register');
+                setLoginError(null);
+              }}
+              className={`flex-1 py-2 rounded-xl text-xs font-['Fredoka'] font-bold cursor-pointer transition-colors ${
+                authTab === 'register'
+                  ? 'bg-yellow-400 text-sky-950 shadow-md'
+                  : 'text-cyan-200 hover:bg-sky-900/60'
+              }`}
+            >
+              DAFTAR AKUN GURU
+            </button>
+          </div>
+
+          {/* Form */}
+          <form onSubmit={handleLoginSubmit} className="p-6 sm:p-7 space-y-4">
             <div>
               <h2 className="text-xl font-bold font-['Fredoka'] text-white">
-                Portal Guru (Admin Dashboard)
+                {authTab === 'register' ? 'PENDAFTARAN AKUN GURU' : 'PORTAL MASUK GURU'}
               </h2>
               <p className="text-xs text-cyan-200 mt-1">
-                Autentikasi aman melalui server backend. Siswa tidak memiliki akses ke halaman ini.
+                {authTab === 'register'
+                  ? 'Buat akun guru permanen untuk mengelola kelas dan asesmen.'
+                  : 'Silakan masuk untuk mengelola permainan dan melihat hasil asesmen.'}
               </p>
             </div>
 
             {loginError && (
               <div
                 role="alert"
-                className="p-3 rounded-xl bg-rose-950 border border-rose-400 text-xs font-bold text-rose-100 flex items-center gap-2"
+                className="p-3.5 rounded-2xl bg-rose-950 border-2 border-rose-400 text-xs font-bold text-rose-100 flex items-center gap-2.5"
               >
                 <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0" />
                 <span>{loginError}</span>
+              </div>
+            )}
+
+            {authTab === 'register' && (
+              <div>
+                <label
+                  htmlFor="teacher-full-name"
+                  className="block text-xs font-bold text-cyan-100 mb-1"
+                >
+                  Nama Lengkap Guru (dengan Gelar)
+                </label>
+                <input
+                  id="teacher-full-name"
+                  type="text"
+                  required
+                  value={teacherNameInput}
+                  onChange={(e) => setTeacherNameInput(e.target.value)}
+                  placeholder="Contoh: Ibu Ani Rahmawati, S.Pd."
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
+                />
               </div>
             )}
 
@@ -263,7 +400,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 value={usernameInput}
                 onChange={(e) => setUsernameInput(e.target.value)}
                 placeholder="Masukkan username guru..."
-                className="w-full px-3.5 py-2.5 rounded-xl bg-sky-950 border-2 border-cyan-400/70 text-white text-sm font-bold focus:outline-none focus:border-yellow-400"
+                className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
               />
             </div>
 
@@ -281,33 +418,43 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
                 placeholder="Masukkan password..."
-                className="w-full px-3.5 py-2.5 rounded-xl bg-sky-950 border-2 border-cyan-400/70 text-white text-sm font-bold focus:outline-none focus:border-yellow-400"
+                className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
               />
             </div>
 
-            <div className="bg-sky-950/80 border border-cyan-500/30 rounded-xl p-3 text-xs text-cyan-200 flex items-center justify-between gap-2">
-              <span>
-                Mode Demo Server Aktif (Default env <code className="text-yellow-300">guru_aqua</code>)
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setUsernameInput('guru_aqua');
-                  setPasswordInput('AquaGuru2026!');
-                }}
-                className="px-2.5 py-1 rounded-lg bg-cyan-500/30 hover:bg-cyan-500/50 text-yellow-300 font-bold cursor-pointer shrink-0"
-              >
-                Isi Demo Guru
-              </button>
-            </div>
+            {authTab === 'register' && (
+              <div>
+                <label
+                  htmlFor="teacher-confirm-password"
+                  className="block text-xs font-bold text-cyan-100 mb-1"
+                >
+                  Konfirmasi Password
+                </label>
+                <input
+                  id="teacher-confirm-password"
+                  type="password"
+                  required
+                  value={confirmPasswordInput}
+                  onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                  placeholder="Ulangi password..."
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
+                />
+              </div>
+            )}
 
             <button
               type="submit"
               disabled={isLoggingIn}
-              className="w-full py-3 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-base border-2 border-white shadow-lg cursor-pointer flex items-center justify-center gap-2"
+              className="w-full py-3.5 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-base border-2 border-white shadow-lg cursor-pointer flex items-center justify-center gap-2 transition-transform active:scale-95 disabled:opacity-50 mt-2"
             >
-              <span>{isLoggingIn ? 'Memverifikasi...' : 'Masuk ke Dashboard Guru'}</span>
-              <ArrowRight className="w-4 h-4 stroke-[2.75]" />
+              <span>
+                {isLoggingIn
+                  ? 'Memproses...'
+                  : authTab === 'register'
+                    ? 'Daftar Akun Guru & Masuk'
+                    : 'Masuk ke Dashboard Guru'}
+              </span>
+              <ArrowRight className="w-5 h-5 stroke-[2.75]" />
             </button>
           </form>
         </div>
@@ -338,6 +485,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
 
           <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                soundManager.playClick();
+                loadRealSupabaseData();
+              }}
+              disabled={isRefreshing}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-200 text-xs font-bold border border-cyan-400/50 cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-cyan-300 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span>{isRefreshing ? 'Menyingkronkan...' : 'Sinkron Data'}</span>
+            </button>
             <button
               type="button"
               onClick={handleExportCsv}
@@ -443,6 +602,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           >
             <Database className="w-3.5 h-3.5" />
             <span>6. Kelola Data & Supabase</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('accounts')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${
+              activeTab === 'accounts'
+                ? 'bg-yellow-400 text-sky-950'
+                : 'bg-sky-900 text-cyan-100 hover:bg-sky-800'
+            }`}
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>7. Akun Siswa & Reset Password</span>
           </button>
         </div>
 
@@ -732,8 +903,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                           <div className="text-xl font-mono font-extrabold text-yellow-300">
                             Level{' '}
                             {Math.max(
-                              selectedStudent.solo.unlockedLevel,
-                              selectedStudent.championship.unlockedLevel,
+                              selectedStudent.solo?.unlockedLevel || 1,
+                              selectedStudent.championship?.unlockedLevel || 1,
                             )}{' '}
                             / 5
                           </div>
@@ -754,19 +925,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             <div className="bg-sky-950/80 rounded-lg p-2 border border-cyan-500/20">
                               <div className="text-[10px] text-cyan-300">Latest Score</div>
                               <div className="text-sm font-mono font-bold text-white mt-0.5">
-                                {selectedStudent.solo.latestTotalScore}
+                                {selectedStudent.solo?.latestTotalScore || 0}
                               </div>
                             </div>
                             <div className="bg-sky-950/80 rounded-lg p-2 border border-cyan-500/20">
                               <div className="text-[10px] text-yellow-300">Best Score</div>
                               <div className="text-sm font-mono font-bold text-yellow-300 mt-0.5">
-                                {selectedStudent.solo.bestTotalScore}
+                                {selectedStudent.solo?.bestTotalScore || 0}
                               </div>
                             </div>
                             <div className="bg-sky-950/80 rounded-lg p-2 border border-cyan-500/20">
                               <div className="text-[10px] text-emerald-300">Nilai (100)</div>
                               <div className="text-sm font-mono font-bold text-emerald-300 mt-0.5">
-                                {selectedStudent.solo.academicGrade}
+                                {selectedStudent.solo?.academicGrade || 0}
                               </div>
                             </div>
                           </div>
@@ -784,19 +955,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             <div className="bg-sky-950/80 rounded-lg p-2 border border-yellow-400/20">
                               <div className="text-[10px] text-yellow-300">Total Skor</div>
                               <div className="text-sm font-mono font-bold text-yellow-300 mt-0.5">
-                                {selectedStudent.championship.totalChampionshipScore}
+                                {selectedStudent.championship?.totalChampionshipScore || 0}
                               </div>
                             </div>
                             <div className="bg-sky-950/80 rounded-lg p-2 border border-yellow-400/20">
                               <div className="text-[10px] text-emerald-300">Nilai (100)</div>
                               <div className="text-sm font-mono font-bold text-emerald-300 mt-0.5">
-                                {selectedStudent.championship.academicGrade}
+                                {selectedStudent.championship?.academicGrade || 0}
                               </div>
                             </div>
                             <div className="bg-sky-950/80 rounded-lg p-2 border border-yellow-400/20">
                               <div className="text-[10px] text-cyan-200">Waktu</div>
                               <div className="text-sm font-mono font-bold text-white mt-0.5">
-                                {selectedStudent.championship.totalTimeSeconds}s
+                                {selectedStudent.championship?.totalTimeSeconds || 0}s
                               </div>
                             </div>
                           </div>
@@ -1168,48 +1339,56 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-cyan-500/20">
-                    {students.map((stu) => {
-                      const charName =
-                        CHARACTERS.find((c) => c.id === stu.characterId)?.name || stu.characterId;
-                      return (
-                        <tr key={stu.id} className="hover:bg-sky-900/40">
-                          <td className="py-3 px-4 font-bold text-white flex items-center gap-2.5">
-                            <CharacterAvatarSvg characterId={stu.characterId} className="w-8 h-8" />
-                            <span>{stu.name}</span>
-                          </td>
-                          <td className="py-3 px-4 text-cyan-200">{charName}</td>
-                          <td className="py-3 px-4 text-right font-mono text-cyan-100 tabular-nums">
-                            {stu.solo.latestTotalScore}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold text-yellow-300 tabular-nums">
-                            {stu.solo.bestTotalScore} / 1000
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold text-emerald-300 tabular-nums">
-                            {stu.solo.academicGrade}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold text-yellow-300 tabular-nums">
-                            {stu.championship.totalChampionshipScore} / 1000
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold text-emerald-300 tabular-nums">
-                            {stu.championship.academicGrade}
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                soundManager.playClick();
-                                const next = deleteStudentProfile(stu.id);
-                                onUpdateStudents(next);
-                                setStatusBanner(`Data pemain ${stu.name} telah dihapus.`);
-                              }}
-                              className="px-2.5 py-1 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold cursor-pointer"
-                            >
-                              Hapus
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {students.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="py-8 text-center text-cyan-200 text-xs font-bold">
+                          Belum ada data hasil asesmen siswa terdaftar di database. Siswa dapat mendaftar mandiri via tombol "MULAI SEBAGAI SISWA" dengan Kode Akses: <strong className="text-yellow-300 font-mono">{settings.accessCode}</strong>.
+                        </td>
+                      </tr>
+                    ) : (
+                      students.map((stu) => {
+                        const charName =
+                          CHARACTERS.find((c) => c.id === stu.characterId)?.name || stu.characterId;
+                        return (
+                          <tr key={stu.id} className="hover:bg-sky-900/40">
+                            <td className="py-3 px-4 font-bold text-white flex items-center gap-2.5">
+                              <CharacterAvatarSvg characterId={stu.characterId} className="w-8 h-8" />
+                              <span>{stu.name}</span>
+                            </td>
+                            <td className="py-3 px-4 text-cyan-200">{charName}</td>
+                            <td className="py-3 px-4 text-right font-mono text-cyan-100 tabular-nums">
+                              {stu.solo.latestTotalScore}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-yellow-300 tabular-nums">
+                              {stu.solo.bestTotalScore} / 1000
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-emerald-300 tabular-nums">
+                              {stu.solo.academicGrade}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-yellow-300 tabular-nums">
+                              {stu.championship.totalChampionshipScore} / 1000
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-emerald-300 tabular-nums">
+                              {stu.championship.academicGrade}
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  soundManager.playClick();
+                                  const next = deleteStudentProfile(stu.id);
+                                  onUpdateStudents(next);
+                                  setStatusBanner(`Data pemain ${stu.name} telah dihapus.`);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-bold cursor-pointer"
+                              >
+                                Hapus
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1408,15 +1587,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   type="button"
                   onClick={() => {
                     soundManager.playClick();
-                    const { settings: s, students: list } = resetToDemoSeedData();
+                    const { settings: s } = resetToDemoSeedData();
                     onUpdateSettings(s);
-                    onUpdateStudents(list);
-                    setStatusBanner('Data contoh simulasi kelas berhasil dipulihkan!');
+                    onUpdateStudents([]);
+                    setStatusBanner('Cache siswa lokal berhasil dibersihkan! Silakan tekan "Sinkron Data" untuk memuat data dari Supabase.');
                   }}
                   className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-bold text-xs cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>Pulihkan Data Simulasi Kelas</span>
+                  <span>Bersihkan Cache Siswa Lokal</span>
                 </button>
               </div>
 
@@ -1430,8 +1609,210 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
             </div>
           )}
+
+          {/* TAB 7: STUDENT ACCOUNTS & PASSWORD RESET */}
+          {activeTab === 'accounts' && (
+            <div className="space-y-4">
+              <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold font-['Fredoka'] text-white flex items-center gap-2">
+                    <ShieldCheck className="w-5 h-5 text-yellow-300" />
+                    <span>Manajemen Akun Siswa & Pemulihan Password</span>
+                  </h3>
+                  <p className="text-xs text-cyan-200 mt-0.5">
+                    Guru dapat memverifikasi identitas siswa dan mereset password akun siswa. Seluruh riwayat skor dan progres tetap utuh.
+                  </p>
+                </div>
+
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-4 h-4 text-cyan-300 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={participantSearch}
+                    onChange={(e) => setParticipantSearch(e.target.value)}
+                    placeholder="Cari nama atau username..."
+                    className="w-full pl-9 pr-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/50 text-white text-xs font-bold focus:outline-none focus:border-yellow-400"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-sky-900/90 text-cyan-200 uppercase font-bold text-[11px] border-b border-cyan-500/30">
+                      <tr>
+                        <th className="py-3 px-4">Siswa & Username</th>
+                        <th className="py-3 px-4">Karakter</th>
+                        <th className="py-3 px-4 text-center">Skor Solo Terbaik</th>
+                        <th className="py-3 px-4 text-center">Skor Championship</th>
+                        <th className="py-3 px-4 text-center">Status</th>
+                        <th className="py-3 px-4 text-center">Tindakan Pemulihan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-cyan-500/20 text-cyan-100 font-semibold">
+                      {students
+                        .filter(
+                          (s) =>
+                            !participantSearch ||
+                            s.name.toLowerCase().includes(participantSearch.toLowerCase()) ||
+                            (s.username && s.username.toLowerCase().includes(participantSearch.toLowerCase())),
+                        )
+                        .map((student) => (
+                          <tr key={student.id} className="hover:bg-sky-900/40 transition-colors">
+                            <td className="py-3 px-4">
+                              <div className="font-bold text-white text-sm">{student.name}</div>
+                              <div className="text-[11px] text-yellow-300 font-mono">
+                                @{student.username || student.normalizedName}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="flex items-center gap-2">
+                                <CharacterAvatarSvg
+                                  characterId={student.characterId}
+                                  className="w-8 h-8 shrink-0"
+                                />
+                                <span className="font-bold text-white capitalize">
+                                  {CHARACTERS.find((c) => c.id === student.characterId)?.name}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 text-center font-mono font-bold text-yellow-300 tabular-nums">
+                              {student.solo?.bestTotalScore || 0} Poin
+                            </td>
+                            <td className="py-3 px-4 text-center font-mono font-bold text-cyan-300 tabular-nums">
+                              {student.championship?.totalChampionshipScore || 0} Poin
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-950 border border-emerald-400 text-emerald-300">
+                                <UserCheck className="w-3 h-3" /> Akun Terverifikasi
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  soundManager.playClick();
+                                  setResetTargetStudent(student);
+                                  setNewPasswordInput('');
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs border border-white cursor-pointer shadow-md transition-transform active:scale-95"
+                              >
+                                <KeyRound className="w-3.5 h-3.5 stroke-[2.5]" />
+                                <span>Reset Password</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* TEACHER RESET PASSWORD MODAL */}
+      {resetTargetStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-sky-950/90 backdrop-blur-xs">
+          <div className="w-full max-w-md bg-sky-900 border-4 border-yellow-400 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-cyan-500/30 pb-3">
+              <div className="flex items-center gap-2 font-['Fredoka'] font-bold text-lg text-white">
+                <KeyRound className="w-5 h-5 text-yellow-300" />
+                <span>Reset Password Siswa</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetTargetStudent(null)}
+                className="text-cyan-200 hover:text-white text-xs font-bold cursor-pointer"
+              >
+                Batal
+              </button>
+            </div>
+
+            <div className="bg-sky-950 p-3.5 rounded-2xl border border-cyan-500/40 space-y-1">
+              <div className="text-xs text-cyan-300 font-bold uppercase">Target Akun Siswa</div>
+              <div className="text-base font-bold font-['Fredoka'] text-white">
+                {resetTargetStudent.name}
+              </div>
+              <div className="text-xs font-mono text-yellow-300">
+                Username: @{resetTargetStudent.username || resetTargetStudent.normalizedName}
+              </div>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                soundManager.playClick();
+                if (!newPasswordInput || newPasswordInput.length < 6) {
+                  alert('Password baru minimal 6 karakter.');
+                  return;
+                }
+                setIsResetting(true);
+                try {
+                  const targetUsername =
+                    resetTargetStudent.username || resetTargetStudent.normalizedName;
+                  const res = await resetStudentPasswordByTeacher(
+                    resetTargetStudent.id,
+                    targetUsername,
+                    newPasswordInput,
+                  );
+                  if (res.ok) {
+                    setStatusBanner(
+                      res.message ||
+                        `Password untuk siswa ${resetTargetStudent.name} (@${targetUsername}) telah berhasil di-reset!`,
+                    );
+                    setResetTargetStudent(null);
+                    setNewPasswordInput('');
+                  } else {
+                    alert(res.message || 'Gagal reset password.');
+                  }
+                } catch (err: any) {
+                  alert(err?.message || 'Gagal mereset password.');
+                } finally {
+                  setIsResetting(false);
+                }
+              }}
+              className="space-y-4"
+            >
+              <div>
+                <label htmlFor="new-pass-input" className="block text-xs font-bold text-cyan-100 mb-1">
+                  Masukkan Password Baru Untuk Siswa
+                </label>
+                <input
+                  id="new-pass-input"
+                  type="text"
+                  required
+                  value={newPasswordInput}
+                  onChange={(e) => setNewPasswordInput(e.target.value)}
+                  placeholder="Password baru (min. 6 karakter)..."
+                  className="w-full px-4 py-3 rounded-2xl bg-sky-950 border-2 border-cyan-400 text-white font-mono font-bold text-base focus:outline-none focus:border-yellow-400"
+                />
+                <p className="text-[10px] text-cyan-200 mt-1">
+                  Beritahukan password baru ini kepada siswa agar siswa dapat login dari perangkat miliknya.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setResetTargetStudent(null)}
+                  className="px-4 py-2.5 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-100 text-xs font-bold cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isResetting}
+                  className="px-6 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-sm border-2 border-white shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  {isResetting ? 'Memproses Reset...' : 'Simpan Password Baru'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

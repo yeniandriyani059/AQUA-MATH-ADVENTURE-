@@ -876,9 +876,9 @@ export const AquaCityCanvas: React.FC<AquaCityCanvasProps> = ({
       for (let i = 0; i < pList.length; i++) {
         const p = pList[i];
         const t = (elapsed * p.speed + p.phase) % 1.0;
-        const px = p.baseX + p.vx * t * 1.4;
-        const py = p.baseY + p.vy * t - 0.5 * 9.2 * t * t;
-        const pz = p.baseZ + p.vz * t * 1.4;
+        const px = p.originX + p.vx * t * 1.4;
+        const py = p.originY + p.vy * t - 0.5 * 9.2 * t * t;
+        const pz = p.originZ + p.vz * t * 1.4;
         const scale = Math.max(0.2, Math.sin(t * Math.PI) * 1.15);
         _dummyObj.position.set(px, Math.max(0.05, py), pz);
         _dummyObj.scale.setScalar(scale);

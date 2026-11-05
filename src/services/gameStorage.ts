@@ -13,6 +13,10 @@ import {
   StudentProfile,
 } from '../types/game';
 import { isSupabaseConfigured, supabase } from './supabaseClient';
+import {
+  registerStudentProfile,
+  saveGameAttempt,
+} from './supabaseService';
 
 const STORAGE_KEYS = {
   SETTINGS: 'aqua_math_class_settings_v1',
@@ -47,36 +51,7 @@ function buildHelperAnswers(locationId: number, targetCorrectCount: number): Rec
 }
 
 export function createSeedStudents(): StudentProfile[] {
-  // 1. Nabila Putri (Sinta - Hijab) - High performer in both modes
-  let s1 = createEmptyStudentProfile('stu_demo_1', 'Nabila Putri', 'sinta', '2026-11-01T08:00:00.000Z');
-  s1 = applyMissionResultToProfile(s1, 'solo', 1, buildHelperAnswers(1, 10), 58).updatedProfile;
-  s1 = applyMissionResultToProfile(s1, 'solo', 2, buildHelperAnswers(2, 9), 64).updatedProfile;
-  s1 = applyMissionResultToProfile(s1, 'solo', 3, buildHelperAnswers(3, 9), 70).updatedProfile;
-  s1 = applyMissionResultToProfile(s1, 'solo', 4, buildHelperAnswers(4, 8), 75).updatedProfile;
-
-  s1 = applyMissionResultToProfile(s1, 'championship', 1, buildHelperAnswers(1, 10), 54).updatedProfile;
-  s1 = applyMissionResultToProfile(s1, 'championship', 2, buildHelperAnswers(2, 10), 60).updatedProfile;
-  s1 = applyMissionResultToProfile(s1, 'championship', 3, buildHelperAnswers(3, 9), 68).updatedProfile;
-  s1 = applyMissionResultToProfile(s1, 'championship', 4, buildHelperAnswers(4, 9), 72).updatedProfile;
-
-  // 2. Dimas Aditya (Bima) - Active explorer
-  let s2 = createEmptyStudentProfile('stu_demo_2', 'Dimas Aditya', 'bima', '2026-11-01T08:05:00.000Z');
-  s2 = applyMissionResultToProfile(s2, 'solo', 1, buildHelperAnswers(1, 9), 62).updatedProfile;
-  s2 = applyMissionResultToProfile(s2, 'solo', 2, buildHelperAnswers(2, 8), 66).updatedProfile;
-
-  s2 = applyMissionResultToProfile(s2, 'championship', 1, buildHelperAnswers(1, 9), 59).updatedProfile;
-  s2 = applyMissionResultToProfile(s2, 'championship', 2, buildHelperAnswers(2, 9), 63).updatedProfile;
-  s2 = applyMissionResultToProfile(s2, 'championship', 3, buildHelperAnswers(3, 8), 74).updatedProfile;
-
-  // 3. Meylani Sari (Kirana) - Level 1 completed
-  let s3 = createEmptyStudentProfile('stu_demo_3', 'Meylani Sari', 'kirana', '2026-11-01T08:10:00.000Z');
-  s3 = applyMissionResultToProfile(s3, 'solo', 1, buildHelperAnswers(1, 8), 70).updatedProfile;
-  s3 = applyMissionResultToProfile(s3, 'solo', 2, buildHelperAnswers(2, 8), 72).updatedProfile;
-
-  s3 = applyMissionResultToProfile(s3, 'championship', 1, buildHelperAnswers(1, 10), 50).updatedProfile;
-  s3 = applyMissionResultToProfile(s3, 'championship', 2, buildHelperAnswers(2, 8), 68).updatedProfile;
-
-  return [s1, s2, s3];
+  return [];
 }
 
 export function loadClassSettings(): ClassSettings {
@@ -132,14 +107,27 @@ export function loadStudents(): StudentProfile[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
     if (!raw) {
-      const seed = createSeedStudents();
-      localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(seed));
-      return seed;
+      return [];
     }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+
+    // Filter out legacy dummy / seed records
+    const cleaned = parsed.filter((s) => {
+      if (!s || !s.name) return false;
+      if (typeof s.id === 'string' && s.id.startsWith('stu_demo')) return false;
+      const lower = String(s.name).trim().toLowerCase();
+      if (['nabila putri', 'dimas aditya', 'meylani sari', 'yennia', 'yennie'].includes(lower)) return false;
+      return true;
+    });
+
+    if (cleaned.length !== parsed.length) {
+      saveStudents(cleaned);
+    }
+
+    return cleaned;
   } catch {
-    return createSeedStudents();
+    return [];
   }
 }
 
@@ -231,6 +219,47 @@ export function recordMissionCompletion(
   };
 }
 
+export async function recordMissionCompletionAsync(
+  studentId: string,
+  mode: GameMode,
+  locationId: number,
+  selectedAnswers: Record<string, OptionLetter>,
+  timeSpentSeconds: number,
+): Promise<{
+  updatedStudent: StudentProfile;
+  allStudents: StudentProfile[];
+  summary: MissionResultSummary;
+}> {
+  const result = recordMissionCompletion(
+    studentId,
+    mode,
+    locationId,
+    selectedAnswers,
+    timeSpentSeconds,
+  );
+
+  const levelNumber = Math.ceil(locationId / 2);
+
+  try {
+    const saveRes = await saveGameAttempt({
+      studentId: result.updatedStudent.id,
+      mode,
+      levelNumber,
+      locationId,
+      correctCount: result.summary.correctCount,
+      wrongCount: result.summary.wrongCount,
+      durationSeconds: timeSpentSeconds,
+    });
+    result.summary.syncedToSupabase = saveRes.syncedToSupabase;
+    result.summary.syncStatusMessage = saveRes.message;
+  } catch {
+    result.summary.syncedToSupabase = false;
+    result.summary.syncStatusMessage = 'Tersimpan lokal (Penundaan jaringan)';
+  }
+
+  return result;
+}
+
 export function deleteStudentProfile(studentId: string): StudentProfile[] {
   const next = loadStudents().filter((s) => s.id !== studentId);
   saveStudents(next);
@@ -255,9 +284,8 @@ export function resetAllChampionshipScores(): StudentProfile[] {
 
 export function resetToDemoSeedData(): { settings: ClassSettings; students: StudentProfile[] } {
   const settings = saveClassSettings(DEFAULT_CLASS_SETTINGS);
-  const students = createSeedStudents();
-  saveStudents(students);
-  return { settings, students };
+  saveStudents([]);
+  return { settings, students: [] };
 }
 
 export function setActiveStudentId(id: string | null): void {
@@ -325,6 +353,29 @@ export async function loginTeacherAdmin(
   }
 }
 
+export async function registerTeacherAdmin(data: {
+  name: string;
+  username: string;
+  password: string;
+  confirmPassword: string;
+}): Promise<{ ok: boolean; message?: string; teacherName?: string }> {
+  try {
+    const response = await fetch('/api/admin/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await response.json();
+    if (response.ok && result.ok && result.token) {
+      sessionStorage.setItem(STORAGE_KEYS.ADMIN_TOKEN, result.token);
+      return { ok: true, teacherName: result.teacherName || data.name, message: result.message };
+    }
+    return { ok: false, message: result.message || 'Gagal mendaftarkan akun guru.' };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || 'Gagal menghubungi server pendaftaran guru.' };
+  }
+}
+
 export function isTeacherAdminLoggedIn(): boolean {
   try {
     return Boolean(sessionStorage.getItem(STORAGE_KEYS.ADMIN_TOKEN));
@@ -340,3 +391,4 @@ export function logoutTeacherAdmin(): void {
     // ignore
   }
 }
+

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Award, BookOpen, CheckCircle2, Map, Sparkles } from 'lucide-react';
+import { ArrowRight, BookOpen, CheckCircle2, Map } from 'lucide-react';
 import { LEVELS, MISSION_LOCATIONS } from '../data/locations';
 import { getQuestionsByLocation } from '../data/questions';
 import { MissionResultSummary } from '../types/game';
@@ -17,7 +17,7 @@ export const MissionResultModal: React.FC<MissionResultModalProps> = ({
   onContinueAdventure,
   onOpenWorldMap,
 }) => {
-  const [showExplanations, setShowExplanations] = useState(true);
+  const [showExplanations, setShowExplanations] = useState(false);
   const location = MISSION_LOCATIONS.find((l) => l.id === summary.locationId)!;
   const level = LEVELS.find((lvl) => lvl.id === summary.levelId)!;
   const questions = getQuestionsByLocation(summary.locationId);
@@ -28,178 +28,105 @@ export const MissionResultModal: React.FC<MissionResultModalProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Hasil Penyelesaian Misi dan Pembahasan"
-      className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 bg-sky-950/90 overflow-y-auto pointer-events-auto"
+      aria-label="Hasil Penyelesaian Misi"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-sky-950/92 backdrop-blur-xs pointer-events-auto overflow-hidden"
     >
-      <div className="w-full max-w-4xl bg-sky-900 border-4 border-yellow-400 rounded-3xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
-        {/* Top Celebration Header */}
-        <div className="bg-sky-950 px-6 py-4 border-b-2 border-cyan-500/40 flex flex-wrap items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-3.5">
-            <MedalBadgeSvg medal={summary.medal} className="w-12 h-12 shrink-0" />
+      <div className="w-full max-w-md sm:max-w-xl md:max-w-2xl bg-sky-900 border-3 sm:border-4 border-yellow-400 rounded-3xl shadow-2xl overflow-hidden my-auto max-h-[85dvh] flex flex-col">
+        {/* Top Header */}
+        <div className="bg-sky-950 px-4 sm:px-5 py-3 border-b-2 border-cyan-500/40 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-3">
+            <MedalBadgeSvg medal={summary.medal} className="w-10 h-10 sm:w-12 sm:h-12 shrink-0" />
             <div>
-              <div className="text-xs font-bold uppercase tracking-wider text-yellow-300">
-                MISI LOKASI {location.id} SELESAI! ·{' '}
-                {summary.mode === 'solo' ? 'MODE SOLO ADVENTURE' : 'MODE CLASS CHAMPIONSHIP'}
+              <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-yellow-300">
+                HASIL MISI · POS {location.id}
               </div>
-              <h2 className="text-xl sm:text-2xl font-bold font-['Fredoka'] text-white">
-                {location.name} ({location.indonesianName})
+              <h2 className="text-base sm:text-xl font-bold font-['Fredoka'] text-white truncate">
+                {location.name}
               </h2>
             </div>
           </div>
 
-          {summary.unlockedNextLevel && (
-            <div className="flex items-center gap-1.5 bg-emerald-500 text-sky-950 font-['Fredoka'] font-bold text-sm px-4 py-2 rounded-2xl border-2 border-white shadow-md">
-              <Sparkles className="w-4 h-4 stroke-[2.5]" />
-              <span>LEVEL BERIKUTNYA TERBUKA!</span>
+          <div className="text-right shrink-0">
+            <div className="text-[10px] font-bold text-cyan-300 uppercase">TOTAL POIN</div>
+            <div className="text-xl sm:text-2xl font-extrabold font-mono text-yellow-300 tabular-nums">
+              {summary.pointsEarned} / 100
             </div>
-          )}
+          </div>
         </div>
 
-        {/* Scrollable Content Body */}
-        <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1">
-          {/* Score & Academic Metrics Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <div className="bg-sky-950 border-2 border-yellow-400 rounded-2xl p-3 text-center">
-              <div className="text-[11px] font-bold text-cyan-200 uppercase">POIN LOKASI INI</div>
-              <div className="text-2xl font-extrabold font-mono text-yellow-300 tabular-nums mt-0.5">
-                {summary.pointsEarned} / 100
+        {/* Compact Result Summary Body */}
+        <div className="p-3.5 sm:p-5 overflow-y-auto space-y-3.5 flex-1 max-h-[55dvh]">
+          {/* 3 Metric Cards */}
+          <div className="grid grid-cols-3 gap-2 sm:gap-3 text-center">
+            <div className="bg-sky-950 border border-emerald-400/60 rounded-2xl p-2.5">
+              <div className="text-[10px] font-bold text-emerald-300 uppercase">BENAR</div>
+              <div className="text-xl font-mono font-extrabold text-emerald-300 tabular-nums mt-0.5">
+                {summary.correctCount}
               </div>
-              <div className="text-[11px] text-cyan-300">Maks 100 Poin</div>
+              <div className="text-[9px] text-cyan-200">Soal</div>
             </div>
 
-            <div className="bg-sky-950 border border-cyan-400/50 rounded-2xl p-3 text-center">
-              <div className="text-[11px] font-bold text-cyan-200 uppercase">BENAR / SALAH</div>
-              <div className="text-2xl font-extrabold font-mono text-emerald-300 tabular-nums mt-0.5">
-                {summary.correctCount}B ·{' '}
-                <span className="text-rose-400">{summary.wrongCount}S</span>
+            <div className="bg-sky-950 border border-rose-400/60 rounded-2xl p-2.5">
+              <div className="text-[10px] font-bold text-rose-300 uppercase">SALAH</div>
+              <div className="text-xl font-mono font-extrabold text-rose-400 tabular-nums mt-0.5">
+                {summary.wrongCount}
               </div>
-              <div className="text-[11px] text-cyan-300">Dari 10 Soal</div>
+              <div className="text-[9px] text-cyan-200">Soal</div>
             </div>
 
-            <div className="bg-sky-950 border border-cyan-400/50 rounded-2xl p-3 text-center">
-              <div className="text-[11px] font-bold text-cyan-200 uppercase">POIN {level.code}</div>
-              <div className="text-2xl font-extrabold font-mono text-cyan-300 tabular-nums mt-0.5">
-                {summary.levelTotalPoints} / 200
+            <div className="bg-sky-950 border border-yellow-400/60 rounded-2xl p-2.5">
+              <div className="text-[10px] font-bold text-yellow-300 uppercase">NILAI AKADEMIK</div>
+              <div className="text-xl font-mono font-extrabold text-yellow-300 tabular-nums mt-0.5">
+                {summary.adventureAcademicGrade}
               </div>
-              <div className="text-[11px] text-cyan-300">
-                {summary.levelCompletedNow ? 'Level Selesai' : 'Selesaikan 2 Lokasi'}
-              </div>
-            </div>
-
-            <div className="bg-sky-950 border border-cyan-400/50 rounded-2xl p-3 text-center">
-              <div className="text-[11px] font-bold text-cyan-200 uppercase">TOTAL PETUALANGAN</div>
-              <div className="text-2xl font-extrabold font-mono text-white tabular-nums mt-0.5">
-                {summary.adventureTotalPoints} / 1000
-              </div>
-              <div className="text-[11px] text-yellow-300 font-bold">
-                Nilai Akademik: {summary.adventureAcademicGrade}
-              </div>
-            </div>
-
-            <div className="bg-sky-950 border border-cyan-400/50 rounded-2xl p-3 text-center col-span-2 sm:col-span-1">
-              <div className="text-[11px] font-bold text-cyan-200 uppercase">
-                {summary.mode === 'championship' ? 'PERINGKAT KELAS' : 'MEDALI LOKASI'}
-              </div>
-              <div className="text-xl font-extrabold font-['Fredoka'] text-yellow-300 mt-1 flex items-center justify-center gap-1.5">
-                <Award className="w-5 h-5 text-yellow-300 shrink-0" />
-                <span>
-                  {summary.mode === 'championship' && summary.championshipRank
-                    ? `Peringkat #${summary.championshipRank}`
-                    : summary.medal === 'gold'
-                      ? 'Medali Emas'
-                      : summary.medal === 'silver'
-                        ? 'Medali Perak'
-                        : summary.medal === 'bronze'
-                          ? 'Medali Perunggu'
-                          : 'Tetap Semangat!'}
-                </span>
-              </div>
-              <div className="text-[11px] text-cyan-300 tabular-nums">
-                Waktu: {summary.timeSpentSeconds} detik
-              </div>
+              <div className="text-[9px] text-cyan-200">Skala 100</div>
             </div>
           </div>
 
-          {/* Answer Key & Step-by-Step Explanations (Unlocked AFTER Mission Completion) */}
-          <div className="bg-sky-950/90 border-2 border-cyan-500/40 rounded-2xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-base font-bold font-['Fredoka'] text-yellow-300 flex items-center gap-2">
-                <BookOpen className="w-5 h-5 text-yellow-300 stroke-[2.5]" />
-                <span>Pembahasan Jawaban ({location.name})</span>
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowExplanations((v) => !v)}
-                className="text-xs font-bold text-cyan-300 hover:text-white underline cursor-pointer"
-              >
-                {showExplanations ? 'Sembunyikan Pembahasan' : 'Tampilkan Pembahasan'}
-              </button>
+          {/* Sync & Level Unlocked Banner */}
+          {summary.unlockedNextLevel && (
+            <div className="p-2.5 rounded-2xl bg-emerald-950 border border-emerald-400 text-emerald-200 text-xs font-bold flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>SELAMAT! LEVEL BERIKUTNYA TELAH TERBUKA!</span>
             </div>
+          )}
+
+          {/* Collapsible Pembahasan Button */}
+          <div className="bg-sky-950 border border-cyan-500/40 rounded-2xl p-3">
+            <button
+              type="button"
+              onClick={() => setShowExplanations((v) => !v)}
+              className="w-full flex items-center justify-between text-xs font-bold text-cyan-200 hover:text-white cursor-pointer"
+            >
+              <span className="flex items-center gap-1.5">
+                <BookOpen className="w-4 h-4 text-yellow-300" />
+                <span>Lihat Pembahasan 10 Soal</span>
+              </span>
+              <span className="text-[10px] text-yellow-300 underline">
+                {showExplanations ? 'Sembunyikan' : 'Buka Pembahasan'}
+              </span>
+            </button>
 
             {showExplanations && (
-              <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+              <div className="mt-3 space-y-2 max-h-48 overflow-y-auto pr-1">
                 {questions.map((q, idx) => {
                   const attempt = summary.details.find((d) => d.questionId === q.id);
                   const isCorrect = attempt?.isCorrect;
                   return (
                     <div
                       key={q.id}
-                      className={`p-3 rounded-xl border text-xs sm:text-sm ${
+                      className={`p-2.5 rounded-xl border text-xs ${
                         isCorrect
-                          ? 'bg-emerald-950/50 border-emerald-500/50'
-                          : 'bg-rose-950/50 border-rose-500/50'
+                          ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-100'
+                          : 'bg-rose-950/40 border-rose-500/40 text-rose-100'
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-2 font-bold text-white">
-                        <span>
-                          {idx + 1}. {q.questionText}
-                        </span>
-                        <span
-                          className={`shrink-0 px-2 py-0.5 rounded font-mono text-xs ${
-                            isCorrect ? 'bg-emerald-500 text-sky-950' : 'bg-rose-500 text-white'
-                          }`}
-                        >
-                          {isCorrect ? '+10 Poin (Benar)' : '0 Poin (Kurang Tepat)'}
-                        </span>
+                      <div className="font-bold">
+                        {idx + 1}. {q.questionText}
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-cyan-300">
-                        <span>
-                          <strong>Kompetensi:</strong> {q.competency}
-                        </span>
-                        <span>·</span>
-                        <span>
-                          <strong>Tingkat:</strong> {q.difficultyLevel}
-                        </span>
-                        {q.lkpdReference && (
-                          <>
-                            <span>·</span>
-                            <span className="text-yellow-300 font-mono">
-                              Acuan LKPD: {q.lkpdReference}
-                            </span>
-                          </>
-                        )}
+                      <div className="mt-1 text-[11px] text-cyan-200">
+                        Kunci: <strong className="text-yellow-300">{q.correctOption}</strong> · Pembahasan: {q.explanation}
                       </div>
-                      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-cyan-100">
-                        <span>
-                          Jawabanmu:{' '}
-                          <strong className={isCorrect ? 'text-emerald-300' : 'text-rose-300'}>
-                            {attempt?.selectedOption}.{' '}
-                            {attempt ? q.options[attempt.selectedOption] : '-'}
-                          </strong>
-                        </span>
-                        <span>
-                          Kunci Jawaban:{' '}
-                          <strong className="text-yellow-300">
-                            {q.correctOption}. {q.options[q.correctOption]}
-                          </strong>
-                        </span>
-                      </div>
-                      <p className="mt-1 text-xs text-cyan-200 flex items-start gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-cyan-300 shrink-0 mt-0.5" />
-                        <span>
-                          <strong>Pembahasan:</strong> {q.explanation}
-                        </span>
-                      </p>
                     </div>
                   );
                 })}
@@ -208,47 +135,35 @@ export const MissionResultModal: React.FC<MissionResultModalProps> = ({
           </div>
         </div>
 
-        {/* Footer Actions */}
-        <div className="bg-sky-950 px-6 py-4 border-t-2 border-cyan-500/40 flex flex-wrap items-center justify-between gap-3 shrink-0">
+        {/* Action Buttons */}
+        <div className="bg-sky-950 px-4 sm:px-5 py-3 border-t-2 border-cyan-500/40 flex flex-col sm:flex-row items-center justify-between gap-2.5 shrink-0">
           <button
             type="button"
             onClick={() => {
               soundManager.playClick();
               onOpenWorldMap();
             }}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-100 font-bold text-sm border border-cyan-400/40 cursor-pointer"
+            className="w-full sm:w-auto px-3.5 py-2 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-100 font-bold text-xs border border-cyan-400/40 cursor-pointer flex items-center justify-center gap-1.5"
           >
-            <Map className="w-4 h-4 text-cyan-300" />
-            <span>Buka Peta Dunia Aqua City</span>
+            <Map className="w-3.5 h-3.5 text-cyan-300" />
+            <span>Peta Dunia</span>
           </button>
 
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                soundManager.playClick();
+          <button
+            type="button"
+            onClick={() => {
+              soundManager.playClick();
+              if (nextLocation) {
+                onContinueAdventure(nextLocation.id);
+              } else {
                 onContinueAdventure();
-              }}
-              className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-sky-950 font-['Fredoka'] font-bold text-sm cursor-pointer"
-            >
-              Kembali Jelajahi 3D
-            </button>
-
-            {nextLocation && (
-              <button
-                type="button"
-                data-start="true"
-                onClick={() => {
-                  soundManager.playClick();
-                  onContinueAdventure(nextLocation.id);
-                }}
-                className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-base border-2 border-white shadow-lg cursor-pointer"
-              >
-                <span>Menuju Pos {nextLocation.id}: {nextLocation.name}</span>
-                <ArrowRight className="w-4 h-4 stroke-[2.75]" />
-              </button>
-            )}
-          </div>
+              }
+            }}
+            className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-base border-2 border-white shadow-lg cursor-pointer flex items-center justify-center gap-2 active:scale-95 transition-transform"
+          >
+            <span>LANJUTKAN PETUALANGAN</span>
+            <ArrowRight className="w-5 h-5 stroke-[2.75]" />
+          </button>
         </div>
       </div>
     </div>

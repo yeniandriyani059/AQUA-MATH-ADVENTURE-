@@ -109,6 +109,7 @@ export interface ChampionshipLocationRecord {
 export interface StudentProfile {
   id: string;
   name: string;
+  username?: string;
   normalizedName: string;
   characterId: CharacterId;
   createdAt: string;
@@ -177,4 +178,6 @@ export interface MissionResultSummary {
   adventureAcademicGrade: number; // 0 - 100 (Total Poin / 10)
   unlockedNextLevel: boolean;
   championshipRank?: number;
+  syncedToSupabase?: boolean;
+  syncStatusMessage?: string;
 }

@@ -35,6 +35,7 @@ import {
   loadClassSettings,
   loadStudents,
   recordMissionCompletion,
+  recordMissionCompletionAsync,
   setActiveGameMode,
   setActiveStudentId,
 } from './services/gameStorage';
@@ -62,6 +63,7 @@ import { MissionQuizModal } from './components/MissionQuizModal';
 import { MissionResultModal } from './components/MissionResultModal';
 import { WorldMapModal } from './components/WorldMapModal';
 import { TeacherDashboard } from './components/TeacherDashboard';
+import { PWAInstallButton } from './components/PWAInstallButton';
 
 type AppShellState = 'title' | 'onboarding' | 'playing' | 'paused' | 'gameover' | 'teacher';
 
@@ -162,7 +164,7 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [toastNotice]);
 
-  const currentProfile = activeStudent || students[0];
+  const currentProfile = activeStudent;
   const unlockedLevel = currentProfile
     ? gameMode === 'solo'
       ? currentProfile.solo.unlockedLevel
@@ -179,11 +181,23 @@ export default function App() {
         .map((l) => l.locationId)
     : [];
 
-  const handleStartFromTitle = useCallback(() => {
+  const [onboardingTab, setOnboardingTab] = useState<'register' | 'login'>('register');
+
+  const handleStartRegisterFromTitle = useCallback(() => {
     soundManager.playClick();
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
+    setOnboardingTab('register');
+    setShellState('onboarding');
+  }, []);
+
+  const handleOpenLoginFromTitle = useCallback(() => {
+    soundManager.playClick();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    setOnboardingTab('login');
     setShellState('onboarding');
   }, []);
 
@@ -192,15 +206,15 @@ export default function App() {
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
-    const studentToUse = activeStudent || students[0];
-    if (studentToUse) {
-      setActiveStudent(studentToUse);
-      setActiveStudentId(studentToUse.id);
+    if (activeStudent) {
+      setActiveStudent(activeStudent);
+      setActiveStudentId(activeStudent.id);
       setShellState('playing');
     } else {
+      setOnboardingTab('login');
       setShellState('onboarding');
     }
-  }, [activeStudent, students]);
+  }, [activeStudent]);
 
   // Global keyboard shortcuts (Title start, Pause [P/Esc], Map [M], Dock [H])
   useEffect(() => {
@@ -211,7 +225,7 @@ export default function App() {
       if (shellState === 'title' && !showHowToPlay) {
         if (e.code === 'Enter' || e.code === 'Space') {
           e.preventDefault();
-          handleStartFromTitle();
+          handleStartRegisterFromTitle();
           return;
         }
       }
@@ -241,7 +255,7 @@ export default function App() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [shellState, showHowToPlay, activeQuizLocation, missionResult, handleStartFromTitle]);
+  }, [shellState, showHowToPlay, activeQuizLocation, missionResult, handleStartRegisterFromTitle]);
 
   const handleTriggerInteract = useCallback(
     (loc: MissionLocation) => {
@@ -269,13 +283,13 @@ export default function App() {
     [currentProfile, gameMode, settings],
   );
 
-  const handleMissionSubmit = (
+  const handleMissionSubmit = async (
     locationId: number,
     answers: Record<string, OptionLetter>,
     timeSpentSeconds: number,
   ) => {
     if (!currentProfile) return;
-    const { updatedStudent, allStudents, summary } = recordMissionCompletion(
+    const { updatedStudent, allStudents, summary } = await recordMissionCompletionAsync(
       currentProfile.id,
       gameMode,
       locationId,
@@ -377,47 +391,42 @@ export default function App() {
       )}
 
       {/* =====================================================================
-          SCREEN 1: PREMIUM 3D CHIBI GAME MAIN MENU
-          Top: Identity Badge (Left) + AQUA MATH ADVENTURE Logo (Center) + Suara & Portal Guru (Right)
-          Middle: Full-Body 3D Chibi Bima & Sinta Hero Stage over Live 3D Aqua City
-          Bottom: Primary MULAI PETUALANGAN + LANJUTKAN PETUALANGAN + CARA BERMAIN
+          SCREEN 1: TOTAL REDESIGN - AQUA MATH ADVENTURE MAIN MENU
+          Area A: Header (Pill Kiri & Suara/Portal Guru Kanan)
+          Area B: Judul Utama & Subjudul
+          Area C: Stage Karakter Bima & Sinta
+          Area D: Navigasi Tombol Utama
           ===================================================================== */}
       {shellState === 'title' && (
-        <div className="fixed inset-0 z-20 flex flex-col justify-between px-3 py-2 sm:px-6 sm:py-3.5 bg-gradient-to-b from-sky-950/55 via-sky-950/10 to-sky-950/85 pointer-events-none">
-          {/* BAGIAN ATAS: Identity Badge (Kiri), Logo Utama (Tengah), Suara & Portal Guru (Kanan) */}
-          <div className="grid grid-cols-2 md:grid-cols-3 items-start gap-2 sm:gap-3 w-full shrink-0">
-            {/* Top-Left Identity Badge (No Grade Level, No Emoji) */}
-            <div className="hidden md:flex items-center justify-self-start gap-2.5 bg-sky-950/90 border-2 border-cyan-400/80 rounded-2xl px-3.5 py-2 shadow-lg pointer-events-auto">
-              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center border border-white/60 shadow-inner shrink-0">
-                <Droplets className="w-4 h-4 text-white stroke-[2.5]" />
+        <div className="fixed inset-0 z-20 flex flex-col justify-between p-3 sm:p-5 bg-gradient-to-b from-sky-950/60 via-sky-950/15 to-sky-950/90 pointer-events-none overflow-hidden max-h-screen">
+          {/* AREA A: HEADER */}
+          <div className="flex items-center justify-between gap-3 w-full shrink-0">
+            <div className="flex items-center gap-2 bg-sky-950/90 border-2 border-cyan-400/80 rounded-2xl px-3 py-1.5 shadow-lg pointer-events-auto">
+              <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-cyan-400 to-sky-600 flex items-center justify-center border border-white/60 shrink-0">
+                <Droplets className="w-3.5 h-3.5 text-white stroke-[2.5]" />
               </div>
               <div className="leading-tight">
                 <div className="font-['Fredoka'] font-bold text-xs text-white tracking-wide">
                   AQUA MATH ADVENTURE
                 </div>
-                <div className="text-[10px] font-extrabold tracking-widest text-cyan-300 uppercase">
-                  3D EDUCATIONAL ADVENTURE
+                <div className="text-[9px] font-extrabold tracking-wider text-cyan-300 uppercase">
+                  3D ADVENTURE
                 </div>
               </div>
             </div>
 
-            {/* Top-Center Official AQUA MATH ADVENTURE Logo */}
-            <div className="flex flex-col items-start md:items-center justify-self-start md:justify-self-center pointer-events-auto">
-              <AquaLogoSvg className="w-[155px] sm:w-[195px] md:w-[270px] lg:w-[320px] max-h-[16vh] w-auto drop-shadow-[0_10px_20px_rgba(3,43,67,0.65)]" />
-            </div>
-
-            {/* Top-Right Utility & Administrator Access: Suara + Portal Guru */}
-            <div className="flex items-center justify-end justify-self-end gap-1.5 sm:gap-2 pointer-events-auto">
+            <div className="flex items-center gap-2 pointer-events-auto">
+              <PWAInstallButton />
               <button
                 type="button"
                 onClick={handleToggleSound}
                 aria-label={soundMuted ? 'Aktifkan Suara' : 'Matikan Suara'}
-                className="flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-2xl bg-sky-950/90 hover:bg-sky-900 text-cyan-100 border-2 border-cyan-400/75 font-['Fredoka'] text-[11px] sm:text-xs font-bold shadow-lg cursor-pointer transition-transform active:scale-95 whitespace-nowrap"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-sky-950/90 hover:bg-sky-900 text-cyan-100 border-2 border-cyan-400/70 font-['Fredoka'] text-xs font-bold shadow-lg cursor-pointer transition-transform active:scale-95 whitespace-nowrap"
               >
                 {soundMuted ? (
-                  <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-300 stroke-[2.5]" />
+                  <VolumeX className="w-3.5 h-3.5 text-rose-300 stroke-[2.5]" />
                 ) : (
-                  <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-300 stroke-[2.5]" />
+                  <Volume2 className="w-3.5 h-3.5 text-cyan-300 stroke-[2.5]" />
                 )}
                 <span>{soundMuted ? 'Suara: Mati' : 'Suara: Aktif'}</span>
               </button>
@@ -428,85 +437,87 @@ export default function App() {
                   soundManager.playClick();
                   setShellState('teacher');
                 }}
-                className="flex items-center gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 rounded-2xl bg-sky-950/95 hover:bg-sky-900 text-yellow-300 border-2 border-yellow-400/90 font-['Fredoka'] text-[11px] sm:text-xs font-bold shadow-lg cursor-pointer transition-transform active:scale-95 whitespace-nowrap"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-2xl bg-sky-950/95 hover:bg-sky-900 text-yellow-300 border-2 border-yellow-400/90 font-['Fredoka'] text-xs font-bold shadow-lg cursor-pointer transition-transform active:scale-95 whitespace-nowrap"
               >
-                <ShieldCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-yellow-300 stroke-[2.5]" />
+                <ShieldCheck className="w-4 h-4 text-yellow-300 stroke-[2.5]" />
                 <span>Portal Guru</span>
               </button>
             </div>
           </div>
 
-          {/* BAGIAN TENGAH: Full-Body 3D Chibi BIMA & SINTA Hero Stage in Foreground of Aqua City */}
+          {/* AREA B: JUDUL UTAMA */}
+          <div className="flex flex-col items-center text-center shrink-0 my-1 pointer-events-auto">
+            <AquaLogoSvg className="h-12 sm:h-16 md:h-20 lg:h-24 w-auto max-w-[85vw] drop-shadow-[0_10px_20px_rgba(3,43,67,0.7)]" />
+            <div className="mt-1 inline-flex items-center gap-1.5 px-4 py-0.5 rounded-full bg-gradient-to-r from-yellow-400 via-amber-300 to-yellow-400 text-sky-950 font-['Fredoka'] font-extrabold text-xs sm:text-sm border-2 border-white shadow-md">
+              <Sparkles className="w-3.5 h-3.5 text-sky-950 fill-sky-950" />
+              <span>SAVE AQUA CITY!</span>
+              <Sparkles className="w-3.5 h-3.5 text-sky-950 fill-sky-950" />
+            </div>
+          </div>
+
+          {/* AREA C: KARAKTER (BIMA & SINTA) */}
           <div className="flex-1 flex items-center justify-center min-h-0 py-1 pointer-events-none">
-            <div className="grid grid-cols-2 gap-4 sm:gap-10 md:gap-16 lg:gap-24 items-end max-w-4xl w-full px-2 sm:px-6">
-              {/* HERO 1: BIMA (Left Foreground Stage) */}
+            <div className="grid grid-cols-2 gap-6 sm:gap-12 md:gap-20 items-end max-w-3xl w-full px-4">
+              {/* BIMA */}
               <div
-                onClick={handleStartFromTitle}
+                onClick={handleStartRegisterFromTitle}
                 className="group relative flex flex-col items-center pointer-events-auto cursor-pointer select-none"
               >
-                {/* Soft Aqua Ambient Rim Glow behind Character */}
-                <div className="absolute -inset-2 bg-radial from-cyan-400/30 via-sky-500/10 to-transparent rounded-full blur-xl opacity-80 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                <div className="absolute -inset-2 bg-radial from-cyan-400/25 via-sky-500/10 to-transparent rounded-full blur-lg opacity-80 group-hover:opacity-100 transition-opacity pointer-events-none" />
 
-                {/* Full-Body 3D Chibi Bima Render */}
-                <div className="relative z-10 flex items-end justify-center transition-transform duration-300 group-hover:-translate-y-1.5">
+                <div className="relative z-10 flex items-end justify-center transition-transform duration-300 group-hover:-translate-y-1">
                   <img
                     src={bimaCutoutUrl}
-                    alt="Bima - Kapten Teknisi Air Aqua City"
+                    alt="Bima - Kapten Teknisi Air"
                     draggable={false}
-                    className="h-[34vh] sm:h-[38vh] md:h-[43vh] lg:h-[46vh] max-h-[350px] w-auto object-contain drop-shadow-[0_14px_20px_rgba(3,43,67,0.75)]"
+                    className="h-[20vh] sm:h-[25vh] md:h-[28vh] lg:h-[30vh] max-h-[220px] w-auto object-contain drop-shadow-[0_10px_16px_rgba(3,43,67,0.75)]"
                   />
                 </div>
 
-                {/* 3D Isometric Glowing Aqua Podium */}
-                <div className="relative -mt-2.5 sm:-mt-3.5 w-32 sm:w-48 md:w-56 h-5 sm:h-7 rounded-full bg-gradient-to-b from-cyan-300 via-sky-600 to-sky-950 border-2 border-yellow-300 shadow-[0_8px_22px_rgba(2,132,199,0.75)] flex items-center justify-center">
-                  <div className="w-[86%] h-[58%] rounded-full bg-gradient-to-r from-sky-900 via-cyan-400/50 to-sky-900 border border-cyan-200/70" />
+                <div className="-mt-2 w-28 sm:w-40 md:w-48 h-4 sm:h-5 rounded-full bg-gradient-to-b from-cyan-300 via-sky-600 to-sky-950 border-2 border-yellow-300 shadow-md flex items-center justify-center">
+                  <div className="w-[85%] h-[50%] rounded-full bg-gradient-to-r from-sky-900 via-cyan-400/50 to-sky-900 border border-cyan-200/60" />
                 </div>
 
-                {/* Character Nameplate Badge */}
-                <div className="-mt-2 relative z-20 bg-sky-950/95 border-2 border-yellow-400 rounded-2xl px-2.5 sm:px-4 py-0.5 sm:py-1 shadow-xl flex items-center gap-1.5 sm:gap-2">
-                  <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-yellow-400 shadow-[0_0_8px_#facc15]" />
+                <div className="-mt-2 relative z-20 bg-sky-950/95 border-2 border-yellow-400 rounded-2xl px-3 py-0.5 shadow-lg flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_#facc15]" />
                   <div className="text-left leading-tight">
-                    <div className="font-['Fredoka'] font-bold text-[11px] sm:text-sm text-yellow-300 tracking-wide">
+                    <div className="font-['Fredoka'] font-bold text-xs sm:text-sm text-yellow-300">
                       BIMA
                     </div>
-                    <div className="text-[9px] sm:text-[11px] font-bold text-cyan-100 whitespace-nowrap">
+                    <div className="text-[9px] sm:text-[10px] font-bold text-cyan-100 whitespace-nowrap">
                       Kapten Teknisi Air
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* HERO 2: SINTA (Right Foreground Stage) */}
+              {/* SINTA */}
               <div
-                onClick={handleStartFromTitle}
+                onClick={handleStartRegisterFromTitle}
                 className="group relative flex flex-col items-center pointer-events-auto cursor-pointer select-none"
               >
-                {/* Soft Aqua Ambient Rim Glow behind Character */}
-                <div className="absolute -inset-2 bg-radial from-cyan-400/30 via-sky-500/10 to-transparent rounded-full blur-xl opacity-80 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                <div className="absolute -inset-2 bg-radial from-cyan-400/25 via-sky-500/10 to-transparent rounded-full blur-lg opacity-80 group-hover:opacity-100 transition-opacity pointer-events-none" />
 
-                {/* Full-Body 3D Chibi Sinta Render */}
-                <div className="relative z-10 flex items-end justify-center transition-transform duration-300 group-hover:-translate-y-1.5">
+                <div className="relative z-10 flex items-end justify-center transition-transform duration-300 group-hover:-translate-y-1">
                   <img
                     src={sintaCutoutUrl}
-                    alt="Sinta - Penjaga Air Bersih Aqua City"
+                    alt="Sinta - Penjaga Air Bersih"
                     draggable={false}
-                    className="h-[34vh] sm:h-[38vh] md:h-[43vh] lg:h-[46vh] max-h-[350px] w-auto object-contain drop-shadow-[0_14px_20px_rgba(3,43,67,0.75)]"
+                    className="h-[20vh] sm:h-[25vh] md:h-[28vh] lg:h-[30vh] max-h-[220px] w-auto object-contain drop-shadow-[0_10px_16px_rgba(3,43,67,0.75)]"
                   />
                 </div>
 
-                {/* 3D Isometric Glowing Aqua Podium */}
-                <div className="relative -mt-2.5 sm:-mt-3.5 w-32 sm:w-48 md:w-56 h-5 sm:h-7 rounded-full bg-gradient-to-b from-cyan-300 via-sky-600 to-sky-950 border-2 border-yellow-300 shadow-[0_8px_22px_rgba(2,132,199,0.75)] flex items-center justify-center">
-                  <div className="w-[86%] h-[58%] rounded-full bg-gradient-to-r from-sky-900 via-cyan-400/50 to-sky-900 border border-cyan-200/70" />
+                <div className="-mt-2 w-28 sm:w-40 md:w-48 h-4 sm:h-5 rounded-full bg-gradient-to-b from-cyan-300 via-sky-600 to-sky-950 border-2 border-yellow-300 shadow-md flex items-center justify-center">
+                  <div className="w-[85%] h-[50%] rounded-full bg-gradient-to-r from-sky-900 via-cyan-400/50 to-sky-900 border border-cyan-200/60" />
                 </div>
 
-                {/* Character Nameplate Badge */}
-                <div className="-mt-2 relative z-20 bg-sky-950/95 border-2 border-cyan-300 rounded-2xl px-2.5 sm:px-4 py-0.5 sm:py-1 shadow-xl flex items-center gap-1.5 sm:gap-2">
-                  <span className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-cyan-300 shadow-[0_0_8px_#67e8f9]" />
+                <div className="-mt-2 relative z-20 bg-sky-950/95 border-2 border-cyan-300 rounded-2xl px-3 py-0.5 shadow-lg flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-cyan-300 shadow-[0_0_6px_#67e8f9]" />
                   <div className="text-left leading-tight">
-                    <div className="font-['Fredoka'] font-bold text-[11px] sm:text-sm text-cyan-300 tracking-wide">
+                    <div className="font-['Fredoka'] font-bold text-xs sm:text-sm text-cyan-300">
                       SINTA
                     </div>
-                    <div className="text-[9px] sm:text-[11px] font-bold text-cyan-100 whitespace-nowrap">
+                    <div className="text-[9px] sm:text-[10px] font-bold text-cyan-100 whitespace-nowrap">
                       Penjaga Air Bersih
                     </div>
                   </div>
@@ -515,42 +526,44 @@ export default function App() {
             </div>
           </div>
 
-          {/* BAGIAN BAWAH: Hierarki Tombol Utama (MULAI PETUALANGAN, LANJUTKAN PETUALANGAN, CARA BERMAIN) */}
-          <div className="flex flex-col items-center pb-0.5 sm:pb-1 pointer-events-auto shrink-0 w-full">
-            <div className="flex flex-wrap sm:flex-nowrap items-center justify-center gap-2 sm:gap-2.5 lg:gap-3.5 max-w-5xl mx-auto px-2">
-              {/* 1. Tombol Utama: MULAI PETUALANGAN */}
+          {/* AREA D: NAVIGASI TOMBOL UTAMA */}
+          <div className="flex flex-col items-center pb-2 pointer-events-auto shrink-0 w-full">
+            <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 max-w-4xl mx-auto px-2">
+              {/* 1. MULAI SEBAGAI SISWA */}
               <button
                 type="button"
                 data-start="true"
-                onClick={handleStartFromTitle}
-                className="group flex items-center justify-center gap-2 px-4 sm:px-5 lg:px-7 py-2 sm:py-2.5 lg:py-3 rounded-2xl bg-gradient-to-b from-yellow-300 via-amber-400 to-amber-500 hover:from-yellow-200 hover:via-yellow-300 hover:to-amber-400 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-sm lg:text-lg border-2 border-white shadow-[0_4px_0_#b45309,0_8px_16px_rgba(3,43,67,0.45)] hover:shadow-[0_2px_0_#b45309,0_5px_12px_rgba(3,43,67,0.45)] hover:translate-y-0.5 active:translate-y-1 transition-all cursor-pointer whitespace-nowrap"
+                onClick={handleStartRegisterFromTitle}
+                className="group flex items-center justify-center gap-2 px-5 sm:px-6 py-2.5 sm:py-3 rounded-2xl bg-gradient-to-b from-yellow-300 via-amber-400 to-amber-500 hover:from-yellow-200 hover:to-amber-400 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-sm lg:text-base border-2 border-white shadow-[0_4px_0_#b45309,0_8px_16px_rgba(3,43,67,0.45)] hover:translate-y-0.5 active:translate-y-1 transition-all cursor-pointer whitespace-nowrap"
               >
-                <span className="w-6 h-6 lg:w-7 lg:h-7 rounded-xl bg-sky-950/15 flex items-center justify-center shrink-0">
-                  <Play className="w-3.5 h-3.5 lg:w-4 lg:h-4 fill-sky-950 text-sky-950 ml-0.5" />
+                <span className="w-6 h-6 rounded-xl bg-sky-950/15 flex items-center justify-center shrink-0">
+                  <Play className="w-3.5 h-3.5 fill-sky-950 text-sky-950 ml-0.5" />
                 </span>
-                <span>MULAI PETUALANGAN</span>
+                <span>MULAI SEBAGAI SISWA</span>
               </button>
 
-              {/* 2. Tombol Kedua: LANJUTKAN PETUALANGAN */}
-              {currentProfile && (
-                <button
-                  type="button"
-                  onClick={handleQuickStartAdventure}
-                  className="flex items-center justify-center gap-1.5 sm:gap-2 px-3.5 sm:px-4 lg:px-5 py-2 sm:py-2.5 lg:py-3 rounded-2xl bg-gradient-to-b from-cyan-300 via-cyan-400 to-sky-500 hover:from-cyan-200 hover:to-sky-400 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-xs lg:text-base border-2 border-white shadow-[0_4px_0_#0369a1,0_8px_16px_rgba(3,43,67,0.4)] hover:shadow-[0_2px_0_#0369a1] hover:translate-y-0.5 active:translate-y-1 transition-all cursor-pointer whitespace-nowrap"
-                >
-                  <ArrowRight className="w-4 h-4 lg:w-5 lg:h-5 text-sky-950 stroke-[2.75] shrink-0" />
-                  <span>LANJUTKAN PETUALANGAN ({currentProfile.name.toUpperCase()})</span>
-                </button>
-              )}
+              {/* 2. LOGIN SISWA / LANJUTKAN */}
+              <button
+                type="button"
+                onClick={handleOpenLoginFromTitle}
+                className="flex items-center justify-center gap-2 px-5 sm:px-6 py-2.5 sm:py-3 rounded-2xl bg-gradient-to-b from-cyan-300 via-cyan-400 to-sky-500 hover:from-cyan-200 hover:to-sky-400 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-sm lg:text-base border-2 border-white shadow-[0_4px_0_#0369a1,0_8px_16px_rgba(3,43,67,0.4)] hover:translate-y-0.5 active:translate-y-1 transition-all cursor-pointer whitespace-nowrap"
+              >
+                <ArrowRight className="w-4 h-4 text-sky-950 stroke-[2.75] shrink-0" />
+                <span>
+                  {activeStudent
+                    ? `LANJUTKAN (${activeStudent.name.toUpperCase()})`
+                    : 'LOGIN SISWA'}
+                </span>
+              </button>
 
-              {/* 3. Tombol Tambahan: CARA BERMAIN */}
+              {/* 3. CARA BERMAIN */}
               <button
                 type="button"
                 onClick={() => {
                   soundManager.playClick();
                   setShowHowToPlay(true);
                 }}
-                className="flex items-center justify-center gap-1.5 px-3.5 sm:px-4 lg:px-5 py-2 sm:py-2.5 lg:py-3 rounded-2xl bg-sky-900/95 hover:bg-sky-800 text-white font-['Fredoka'] font-bold text-xs sm:text-xs lg:text-base border-2 border-cyan-300/90 shadow-[0_4px_0_#082f49,0_8px_16px_rgba(3,43,67,0.4)] hover:translate-y-0.5 active:translate-y-1 transition-all cursor-pointer whitespace-nowrap"
+                className="flex items-center justify-center gap-1.5 px-4 sm:px-5 py-2.5 sm:py-3 rounded-2xl bg-sky-900/95 hover:bg-sky-800 text-white font-['Fredoka'] font-bold text-xs sm:text-sm lg:text-base border-2 border-cyan-300/90 shadow-[0_4px_0_#082f49,0_8px_16px_rgba(3,43,67,0.4)] hover:translate-y-0.5 active:translate-y-1 transition-all cursor-pointer whitespace-nowrap"
               >
                 <BookOpen className="w-4 h-4 text-cyan-300 stroke-[2.5] shrink-0" />
                 <span>CARA BERMAIN</span>
@@ -561,13 +574,14 @@ export default function App() {
       )}
 
       {/* =====================================================================
-          SCREEN 2: STUDENT ONBOARDING (Access Code, Name, Character, Mode, Map)
+          SCREEN 2: STUDENT ONBOARDING (Registration & Login)
           ===================================================================== */}
       {shellState === 'onboarding' && (
         <StudentOnboardingModal
           settings={settings}
           initialProfile={activeStudent}
           initialMode={gameMode}
+          initialTab={onboardingTab}
           onCompleteOnboarding={(profile, chosenMode) => {
             setActiveStudent(profile);
             setStudents(loadStudents());
@@ -602,101 +616,59 @@ export default function App() {
           SCREEN 4: 3D PLAYING HUD (Unobstructed Center Viewport, Solid/RGBA)
           ===================================================================== */}
       {shellState === 'playing' && currentProfile && (
-        <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-3 sm:p-4">
-          {/* TOP PERIMETER ROW: Left Profile & POS + Center Location Banner + Right Audio & Menu */}
-          <div className="flex items-start justify-between gap-2 sm:gap-3">
-            {/* Top-Left: Player Profile + Current POS Indicator */}
-            <div className="flex items-center gap-2 pointer-events-auto shrink-0">
-              {/* Compact Player Card */}
-              <div className="bg-sky-950/90 border-2 border-cyan-400 rounded-2xl px-2.5 py-1.5 sm:px-3 sm:py-2 shadow-xl flex items-center gap-2 sm:gap-2.5">
+        <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-2.5 sm:p-4">
+          {/* TOP PERIMETER ROW: Compact Mobile-First HUD Bar */}
+          <div className="flex items-start justify-between gap-2">
+            {/* Top-Left: Player Avatar, Name, Score & POS 1/10 Indicator in a single compact glass card */}
+            <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
+              <div className="bg-sky-950/85 backdrop-blur-md border border-cyan-400/70 rounded-2xl px-2.5 py-1.5 shadow-xl flex items-center gap-2">
                 <CharacterAvatarSvg
                   characterId={currentProfile.characterId}
-                  className="w-9 h-9 sm:w-11 sm:h-11 shrink-0"
+                  className="w-7 h-7 sm:w-9 sm:h-9 shrink-0"
                 />
                 <div className="leading-tight">
-                  <div className="flex items-center gap-1.5 whitespace-nowrap">
-                    <span className="font-['Fredoka'] font-bold text-xs sm:text-base text-white">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-['Fredoka'] font-bold text-xs sm:text-sm text-white truncate max-w-[85px] sm:max-w-[130px]">
                       {currentProfile.name}
                     </span>
-                    <span
-                      className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md ${
-                        gameMode === 'solo'
-                          ? 'bg-cyan-400 text-sky-950'
-                          : 'bg-yellow-400 text-sky-950'
-                      }`}
-                    >
-                      {gameMode === 'solo' ? 'SOLO' : 'CHAMPIONSHIP'}
+                    <span className="text-[9px] font-mono font-extrabold text-yellow-300 bg-sky-900 border border-yellow-400/60 px-1.5 py-0.2 rounded-md">
+                      POS {currentPosLocation.id}/10
                     </span>
                   </div>
-
-                  <div className="text-[11px] sm:text-xs text-cyan-200 mt-0.5 tabular-nums whitespace-nowrap">
-                    {gameMode === 'solo' ? (
-                      <span>
-                        Skor:{' '}
-                        <strong className="text-yellow-300 font-mono font-bold">
-                          {currentProfile.solo.bestTotalScore}
-                        </strong>
-                      </span>
-                    ) : (
-                      <span>
-                        Skor Resmi:{' '}
-                        <strong className="text-yellow-300 font-mono font-bold">
-                          {currentProfile.championship.totalChampionshipScore}
-                        </strong>
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* POS Indicator: POS X / 10 */}
-              <div
-                data-testid="hud-pos-indicator"
-                className="bg-sky-950/90 border-2 border-yellow-400 rounded-2xl px-2.5 sm:px-3 py-1.5 sm:py-2 shadow-xl flex items-center gap-1.5 text-center"
-              >
-                <div className="text-left leading-tight">
-                  <div className="text-[8px] sm:text-[9px] font-extrabold tracking-wider text-yellow-300 uppercase">
-                    LOKASI
-                  </div>
-                  <div className="font-mono font-extrabold text-xs sm:text-sm text-white">
-                    POS {currentPosLocation.id} <span className="text-cyan-300 font-normal">/ 10</span>
+                  <div className="text-[10px] text-cyan-200 tabular-nums">
+                    {currentPosLocation.name} · <strong className="text-yellow-300 font-mono">
+                      {gameMode === 'solo'
+                        ? currentProfile.solo.bestTotalScore
+                        : currentProfile.championship.totalChampionshipScore}
+                    </strong> Poin
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Top-Center: Location Banner & Contextual Interactive Mission Trigger */}
-            <div className="flex flex-col items-center pointer-events-auto max-w-[200px] sm:max-w-xs md:max-w-md text-center">
-              <div className="bg-sky-950/95 border-2 border-cyan-400/80 rounded-2xl px-3 sm:px-4 py-1.5 shadow-xl flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
-                <div className="leading-tight truncate">
-                  <div className="text-[9px] sm:text-[10px] font-extrabold text-cyan-300 uppercase tracking-wider">
-                    POS {currentPosLocation.id} · LEVEL {currentPosLocation.levelId}
-                  </div>
-                  <div className="text-xs sm:text-sm font-bold font-['Fredoka'] text-white truncate">
-                    {currentPosLocation.name}
-                  </div>
-                </div>
-                {nearbyLocation && (
-                  <button
-                    type="button"
-                    tabIndex={-1}
-                    data-testid="proximity-interact-button"
-                    onClick={(e) => {
-                      e.currentTarget.blur();
-                      handleTriggerInteract(nearbyLocation);
-                    }}
-                    className="ml-1 sm:ml-2 flex items-center gap-1 px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs border-2 border-white shadow-lg cursor-pointer whitespace-nowrap active:scale-95 transition-transform shrink-0"
-                  >
-                    <Play className="w-3 h-3 fill-sky-950 text-sky-950" />
-                    <span>MULAI [E]</span>
-                  </button>
-                )}
+            {/* Top-Center Proximity Mission Trigger (When near location) */}
+            {nearbyLocation && (
+              <div className="pointer-events-auto flex items-center justify-center">
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="proximity-interact-button"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    handleTriggerInteract(nearbyLocation);
+                  }}
+                  className="flex items-center gap-1.5 px-3.5 sm:px-4 py-1.5 sm:py-2 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-sm border-2 border-white shadow-2xl cursor-pointer active:scale-95 transition-transform animate-bounce"
+                >
+                  <Play className="w-3.5 h-3.5 fill-sky-950 text-sky-950" />
+                  <span>MULAI MISI [E]</span>
+                </button>
               </div>
-            </div>
+            )}
 
-            {/* Top-Right: Clean Utility Controls (Only Volume & Menu) */}
-            <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto shrink-0">
+            {/* Top-Right: Sound, PWA Install & Menu Buttons */}
+            <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
+              <PWAInstallButton className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-400 text-sky-950 font-bold text-xs shadow-md border border-white" />
+
               <button
                 type="button"
                 tabIndex={-1}
@@ -706,12 +678,12 @@ export default function App() {
                 }}
                 aria-label={soundMuted ? 'Aktifkan Suara' : 'Matikan Suara'}
                 title={soundMuted ? 'Suara Mati' : 'Suara Aktif'}
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-sky-950/90 hover:bg-sky-800 text-cyan-200 border-2 border-cyan-400/70 flex items-center justify-center text-sm font-bold cursor-pointer transition-transform active:scale-95 shadow-lg"
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sky-950/85 backdrop-blur-md hover:bg-sky-800 text-cyan-200 border border-cyan-400/70 flex items-center justify-center text-xs font-bold cursor-pointer transition-transform active:scale-95 shadow-lg"
               >
                 {soundMuted ? (
-                  <VolumeX className="w-4 h-4 text-rose-300 stroke-[2.5]" />
+                  <VolumeX className="w-3.5 h-3.5 text-rose-300 stroke-[2.5]" />
                 ) : (
-                  <Volume2 className="w-4 h-4 text-cyan-200 stroke-[2.5]" />
+                  <Volume2 className="w-3.5 h-3.5 text-cyan-200 stroke-[2.5]" />
                 )}
               </button>
 
@@ -727,9 +699,9 @@ export default function App() {
                 }}
                 aria-label="Buka Menu Permainan"
                 title="Menu Permainan [P]"
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-sky-950/90 hover:bg-sky-800 text-cyan-100 border-2 border-cyan-400/70 flex items-center justify-center text-sm font-bold cursor-pointer transition-transform active:scale-95 shadow-lg"
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sky-950/85 backdrop-blur-md hover:bg-sky-800 text-cyan-100 border border-cyan-400/70 flex items-center justify-center text-xs font-bold cursor-pointer transition-transform active:scale-95 shadow-lg"
               >
-                <Menu className="w-4 h-4 text-cyan-200 stroke-[2.5]" />
+                <Menu className="w-3.5 h-3.5 text-cyan-200 stroke-[2.5]" />
               </button>
             </div>
           </div>
