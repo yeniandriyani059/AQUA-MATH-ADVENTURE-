@@ -51,9 +51,8 @@ export default defineConfig(() => {
       },
     },
     server: {
-      // HMR is disabled in AI Studio environment.
-      hmr: process.env.DISABLE_HMR === 'true' ? false : { overlay: false },
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
+      // HMR is disabled in AI Studio environment to prevent WebSocket closed without opened errors.
+      hmr: false,
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };

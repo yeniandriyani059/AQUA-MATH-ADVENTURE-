@@ -59,11 +59,15 @@ app.post('/api/admin/register', async (req, res) => {
     return;
   }
 
-  const normUsername = String(username).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const rawInput = String(username).trim().toLowerCase();
+  const isEmailInput = rawInput.includes('@');
+  const normUsername = isEmailInput
+    ? rawInput
+    : rawInput.replace(/[^a-z0-9_]/g, '');
   const cleanedName = String(name).trim().replace(/\s+/g, ' ');
 
   if (normUsername.length < 3) {
-    res.status(400).json({ ok: false, message: 'Username minimal 3 karakter.' });
+    res.status(400).json({ ok: false, message: 'Username atau Email minimal 3 karakter.' });
     return;
   }
 
@@ -80,8 +84,8 @@ app.post('/api/admin/register', async (req, res) => {
   const sb = await getSupabaseClient();
   if (sb) {
     try {
-      // 1. Check existing in Supabase Authentication (via email derived from username)
-      const teacherEmail = `tch_${normUsername}@aquamath.org`;
+      // 1. Check existing in Supabase Authentication (via email or derived from username)
+      const teacherEmail = isEmailInput ? rawInput : `tch_${normUsername}@aquamath.org`;
       
       // We'll skip the profile table check and go straight to Auth creation/sign-in.
       // If the user already exists in Auth, we can handle it.
@@ -192,12 +196,14 @@ app.post('/api/admin/register', async (req, res) => {
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
-    res.status(400).json({ ok: false, message: 'Username dan password wajib diisi.' });
+    res.status(400).json({ ok: false, message: 'Email/Username dan password wajib diisi.' });
     return;
   }
 
-  const normUser = String(username).trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-  const teacherEmail = `tch_${normUser}@aquamath.org`;
+  const rawUser = String(username).trim().toLowerCase();
+  const isEmailLogin = rawUser.includes('@');
+  const normUser = isEmailLogin ? rawUser : rawUser.replace(/[^a-z0-9_]/g, '');
+  const teacherEmail = isEmailLogin ? rawUser : `tch_${normUser}@aquamath.org`;
 
   const sb = await getSupabaseClient();
   if (sb) {
@@ -211,7 +217,7 @@ app.post('/api/admin/login', async (req, res) => {
       if (authErr || !authData?.user) {
         res.status(401).json({
           ok: false,
-          message: `Username atau password guru salah: ${authErr?.message || 'Kredensial tidak valid.'}`,
+          message: `Email/Username atau password guru salah: ${authErr?.message || 'Kredensial tidak valid.'}`,
         });
         return;
       }
@@ -745,7 +751,7 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { overlay: false },
+        hmr: false,
         watch: process.env.DISABLE_HMR === 'true' ? null : {},
       },
       appType: 'spa',

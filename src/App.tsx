@@ -39,6 +39,7 @@ import {
   setActiveGameMode,
   setActiveStudentId,
 } from './services/gameStorage';
+import { supabase } from './services/supabaseClient';
 import {
   ClassSettings,
   GameMode,
@@ -111,6 +112,35 @@ export default function App() {
   );
   const [soundMuted, setSoundMuted] = useState<boolean>(() => soundManager.isMuted());
   const [toastNotice, setToastNotice] = useState<string | null>(null);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(false);
+
+  // Listen for Supabase PASSWORD_RECOVERY event when user clicks email reset link
+  useEffect(() => {
+    if (!supabase) return;
+
+    // Also inspect initial URL hash if type=recovery was just loaded
+    if (
+      typeof window !== 'undefined' &&
+      (window.location.hash.includes('type=recovery') ||
+        window.location.search.includes('type=recovery'))
+    ) {
+      setIsPasswordRecovery(true);
+      setShellState('teacher');
+    }
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+        setShellState('teacher');
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   // Portrait orientation hint
   const [isPortraitMobile, setIsPortraitMobile] = useState(false);
@@ -600,6 +630,8 @@ export default function App() {
         <TeacherDashboard
           settings={settings}
           students={students}
+          initialRecoveryMode={isPasswordRecovery}
+          onCompletePasswordRecovery={() => setIsPasswordRecovery(false)}
           onUpdateSettings={(next) => setSettings(next)}
           onUpdateStudents={(next) => {
             setStudents(next);
@@ -608,7 +640,10 @@ export default function App() {
               if (updatedMe) setActiveStudent(updatedMe);
             }
           }}
-          onCloseToTitle={() => setShellState('title')}
+          onCloseToTitle={() => {
+            setIsPasswordRecovery(false);
+            setShellState('title');
+          }}
         />
       )}
 

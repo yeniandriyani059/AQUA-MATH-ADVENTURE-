@@ -775,3 +775,106 @@ export async function getTeacherDashboardData(): Promise<{
     };
   }
 }
+
+/**
+ * 9. requestTeacherPasswordReset(email)
+ * Sends password recovery email via Supabase Auth with redirectTo set to https://aqua-adventure-nine.vercel.app
+ * Never uses Local Demo Mode.
+ */
+export async function requestTeacherPasswordReset(
+  email: string,
+): Promise<{ ok: boolean; message: string }> {
+  const cleanedEmail = (email || '').trim().toLowerCase();
+  if (!cleanedEmail || !cleanedEmail.includes('@')) {
+    return {
+      ok: false,
+      message: 'Masukkan alamat email guru yang valid (contoh: nama@email.com).',
+    };
+  }
+
+  if (!isSupabaseConfigured || !supabase) {
+    return {
+      ok: false,
+      message: 'Koneksi Supabase belum aktif. Tidak dapat mengirim email pemulihan password.',
+    };
+  }
+
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanedEmail, {
+      redirectTo: 'https://aqua-adventure-nine.vercel.app',
+    });
+
+    if (error) {
+      return {
+        ok: false,
+        message: `Gagal mengirim tautan pemulihan password: ${error.message}`,
+      };
+    }
+
+    return {
+      ok: true,
+      message:
+        'Tautan pemulihan password telah dikirim ke email Anda! Silakan periksa kotak masuk (atau folder Spam) dan klik tautan tersebut untuk mengatur password baru.',
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: err?.message || 'Terjadi kesalahan jaringan saat mengirim tautan pemulihan password.',
+    };
+  }
+}
+
+/**
+ * 10. updateTeacherNewPassword(newPassword)
+ * Updates the authenticated teacher user's password via Supabase Auth during PASSWORD_RECOVERY.
+ * Never uses Local Demo Mode.
+ */
+export async function updateTeacherNewPassword(
+  newPassword: string,
+): Promise<{ ok: boolean; message: string }> {
+  const cleanedPassword = String(newPassword || '');
+  if (cleanedPassword.length < 6) {
+    return {
+      ok: false,
+      message: 'Password baru minimal harus terdiri dari 6 karakter.',
+    };
+  }
+
+  if (!isSupabaseConfigured || !supabase) {
+    return {
+      ok: false,
+      message: 'Koneksi Supabase belum aktif. Tidak dapat memperbarui password.',
+    };
+  }
+
+  try {
+    const { data, error } = await supabase.auth.updateUser({
+      password: cleanedPassword,
+    });
+
+    if (error) {
+      return {
+        ok: false,
+        message: `Gagal memperbarui password: ${error.message}`,
+      };
+    }
+
+    if (!data?.user) {
+      return {
+        ok: false,
+        message: 'Sesi pemulihan password tidak ditemukan atau sudah kedaluwarsa. Silakan kirim ulang tautan reset password.',
+      };
+    }
+
+    return {
+      ok: true,
+      message: 'Password baru berhasil disimpan! Silakan login menggunakan password baru Anda.',
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: err?.message || 'Terjadi kesalahan saat menyimpan password baru.',
+    };
+  }
+}
+
