@@ -2051,7 +2051,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                           Pilih Karakter Siswa (character: BIMA / SINTA):
                         </label>
                         <div className="grid grid-cols-2 gap-2.5">
-                          {CHARACTERS.map((char) => {
+                          {CHARACTERS.filter(
+                            (char) => char.id === 'bima' || char.id === 'sinta',
+                          ).map((char) => {
                             const isSelected = newStudentCharacter === char.id;
                             const dbCharCode = mapCharacterIdToDbCharacter(char.id);
                             return (

@@ -56,40 +56,116 @@ VALUES ('default_class', 'AQUA2026', true, true, true, 'Turnamen Penyelamat Air 
 ON CONFLICT (id) DO NOTHING;
 
 -- 2. Teacher Profiles
-CREATE TABLE IF NOT EXISTS teacher_profiles (
-  id TEXT PRIMARY KEY,
-  auth_user_id UUID UNIQUE,
+CREATE TABLE IF NOT EXISTS public.teacher_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  auth_user_id UUID UNIQUE NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   display_name TEXT,
-  role TEXT DEFAULT 'teacher',
+  role TEXT NOT NULL DEFAULT 'teacher',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- RLS Policies for teacher_profiles
-ALTER TABLE teacher_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.teacher_profiles ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Teachers can view own profile" ON public.teacher_profiles;
 CREATE POLICY "Teachers can view own profile"
-ON teacher_profiles FOR SELECT
+ON public.teacher_profiles FOR SELECT
 TO authenticated
 USING (auth.uid() = auth_user_id);
 
+DROP POLICY IF EXISTS "Teachers can insert own profile" ON public.teacher_profiles;
 CREATE POLICY "Teachers can insert own profile"
-ON teacher_profiles FOR INSERT
+ON public.teacher_profiles FOR INSERT
 TO authenticated
-WITH CHECK (auth.uid() = auth_user_id);
+WITH CHECK (auth.uid() = auth_user_id AND LOWER(role) = 'teacher');
 
+DROP POLICY IF EXISTS "Teachers can update own profile" ON public.teacher_profiles;
 CREATE POLICY "Teachers can update own profile"
-ON teacher_profiles FOR UPDATE
+ON public.teacher_profiles FOR UPDATE
 TO authenticated
-USING (auth.uid() = auth_user_id);
+USING (auth.uid() = auth_user_id)
+WITH CHECK (auth.uid() = auth_user_id AND LOWER(role) = 'teacher');
 
 -- 3. Student Profiles
-CREATE TABLE IF NOT EXISTS student_profiles (
+CREATE TABLE IF NOT EXISTS public.student_profiles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  auth_user_id UUID,
+  auth_user_id UUID UNIQUE REFERENCES auth.users(id) ON DELETE SET NULL,
   display_name TEXT NOT NULL,
   character TEXT NOT NULL CHECK (character IN ('BIMA', 'SINTA')),
   is_active BOOLEAN NOT NULL DEFAULT true,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- RLS Policies for student_profiles
+ALTER TABLE public.student_profiles ENABLE ROW LEVEL SECURITY;
+
+-- Policy INSERT terbatas khusus Guru terdaftar pada public.student_profiles
+DROP POLICY IF EXISTS "Teachers can insert student profiles" ON public.student_profiles;
+CREATE POLICY "Teachers can insert student profiles"
+ON public.student_profiles
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  EXISTS (
+    SELECT 1
+    FROM public.teacher_profiles tp
+    WHERE tp.auth_user_id = auth.uid()
+      AND LOWER(tp.role) = 'teacher'
+  )
+);
+
+-- Policy SELECT untuk Guru terdaftar agar dapat melihat daftar siswa & menerima RETURNING saat INSERT
+DROP POLICY IF EXISTS "Teachers can view all student profiles" ON public.student_profiles;
+CREATE POLICY "Teachers can view all student profiles"
+ON public.student_profiles
+FOR SELECT
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.teacher_profiles tp
+    WHERE tp.auth_user_id = auth.uid()
+      AND LOWER(tp.role) = 'teacher'
+  )
+);
+
+-- Policy UPDATE untuk Guru terdaftar
+DROP POLICY IF EXISTS "Teachers can update student profiles" ON public.student_profiles;
+CREATE POLICY "Teachers can update student profiles"
+ON public.student_profiles
+FOR UPDATE
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.teacher_profiles tp
+    WHERE tp.auth_user_id = auth.uid()
+      AND LOWER(tp.role) = 'teacher'
+  )
+)
+WITH CHECK (
+  EXISTS (
+    SELECT 1
+    FROM public.teacher_profiles tp
+    WHERE tp.auth_user_id = auth.uid()
+      AND LOWER(tp.role) = 'teacher'
+  )
+);
+
+-- Policy DELETE untuk Guru terdaftar
+DROP POLICY IF EXISTS "Teachers can delete student profiles" ON public.student_profiles;
+CREATE POLICY "Teachers can delete student profiles"
+ON public.student_profiles
+FOR DELETE
+TO authenticated
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.teacher_profiles tp
+    WHERE tp.auth_user_id = auth.uid()
+      AND LOWER(tp.role) = 'teacher'
+  )
 );
 
 -- 4. Game Attempts (History of individual mission attempts)

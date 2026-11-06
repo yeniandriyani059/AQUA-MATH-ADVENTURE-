@@ -14,6 +14,7 @@ import {
 } from '../types/game';
 import { isSupabaseConfigured, supabase } from './supabaseClient';
 import {
+  buildTeacherProfilePayload,
   generateStudentUuid,
   isValidUuid,
   mapCharacterIdToDbCharacter,
@@ -376,27 +377,35 @@ export async function loginTeacherAdmin(
           if (!selectErr && existingProfile) {
             profileData = existingProfile;
           } else {
-            // Auto-recover missing profile in teacher_profiles using only valid schema columns
+            // Auto-recover missing profile in teacher_profiles using valid UUID id
             const fallbackDisplayName =
               authUser.user_metadata?.name ||
               authUser.user_metadata?.display_name ||
               (authUser.email ? authUser.email.split('@')[0] : 'Ibu/Bapak Guru');
 
-            const newProfilePayload = {
-              id: `tch_${authUser.id}`,
-              auth_user_id: authUser.id,
-              display_name: fallbackDisplayName,
-              role: 'teacher',
-              created_at: authUser.created_at || now,
-            };
+            const newProfilePayload = buildTeacherProfilePayload({
+              authUserId: authUser.id,
+              displayName: fallbackDisplayName,
+              createdAt: authUser.created_at || now,
+            });
 
-            const { data: upsertedProfile } = await supabase
+            const { data: upsertedByAuth, error: errByAuth } = await supabase
               .from('teacher_profiles')
-              .upsert(newProfilePayload, { onConflict: 'id' })
+              .upsert(newProfilePayload, { onConflict: 'auth_user_id' })
               .select('id, auth_user_id, display_name, role, created_at')
               .maybeSingle();
 
-            profileData = upsertedProfile || newProfilePayload;
+            if (!errByAuth && upsertedByAuth) {
+              profileData = upsertedByAuth;
+            } else {
+              const { data: upsertedById } = await supabase
+                .from('teacher_profiles')
+                .upsert(newProfilePayload, { onConflict: 'id' })
+                .select('id, auth_user_id, display_name, role, created_at')
+                .maybeSingle();
+
+              profileData = upsertedById || newProfilePayload;
+            }
           }
 
           const resolvedTeacherName =
@@ -496,20 +505,23 @@ export async function registerTeacherAdmin(data: {
       }
 
       const now = new Date().toISOString();
-      const teacherPayload = {
-        id: `tch_${authUser.id}`,
-        auth_user_id: authUser.id,
-        display_name: cleanedName,
-        role: 'teacher',
-        created_at: now,
-      };
+      const teacherPayload = buildTeacherProfilePayload({
+        authUserId: authUser.id,
+        displayName: cleanedName,
+        createdAt: now,
+      });
 
       const { error: profileErr } = await supabase
         .from('teacher_profiles')
-        .upsert(teacherPayload, { onConflict: 'id' });
+        .upsert(teacherPayload, { onConflict: 'auth_user_id' });
 
       if (profileErr) {
-        console.warn('Info sinkronisasi awal teacher_profiles:', profileErr.message);
+        const { error: fallbackErr } = await supabase
+          .from('teacher_profiles')
+          .upsert(teacherPayload, { onConflict: 'id' });
+        if (fallbackErr) {
+          console.warn('Info sinkronisasi awal teacher_profiles:', fallbackErr.message);
+        }
       }
 
       const sessionToken = signUpData.session?.access_token || `sb_tch_${authUser.id}`;

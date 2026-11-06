@@ -140,12 +140,11 @@ app.post('/api/admin/register', async (req, res) => {
 
       const authUserId = authUser.id;
 
-      // 3. Create profile row in teacher_profiles table
+      // 3. Create profile row in teacher_profiles table using valid UUID id
       const now = new Date().toISOString();
-      const newTeacherId = `tch_${authUserId}`;
 
       const teacherPayload = {
-        id: newTeacherId,
+        id: authUserId,
         auth_user_id: authUserId,
         display_name: cleanedName,
         role: 'teacher',
@@ -154,7 +153,7 @@ app.post('/api/admin/register', async (req, res) => {
 
       const { data: insertedProf, error: insertErr } = await sb
         .from('teacher_profiles')
-        .upsert(teacherPayload, { onConflict: 'id' })
+        .upsert(teacherPayload, { onConflict: 'auth_user_id' })
         .select()
         .maybeSingle();
 
@@ -231,18 +230,18 @@ app.post('/api/admin/login', async (req, res) => {
         .eq('auth_user_id', authData.user.id)
         .maybeSingle();
 
-      // 3. Recovery Logic: If profile missing, create it from Auth metadata
+      // 3. Recovery Logic: If profile missing, create it from Auth metadata using valid UUID id
       if (!profile) {
         const recoverName = authData.user.user_metadata?.name || authData.user.user_metadata?.display_name || 'Ibu/Bapak Guru';
         const recoverPayload = {
-          id: `tch_${authData.user.id}`,
+          id: authData.user.id,
           auth_user_id: authData.user.id,
           display_name: recoverName,
           role: 'teacher',
           created_at: authData.user.created_at || now,
         };
         
-        await sb.from('teacher_profiles').upsert(recoverPayload, { onConflict: 'id' });
+        await sb.from('teacher_profiles').upsert(recoverPayload, { onConflict: 'auth_user_id' });
       }
 
       const finalProfile = profile || { display_name: authData.user.user_metadata?.name || 'Ibu/Bapak Guru' };

@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  acquireIsolatedAnonymousAuthSession,
   buildStudentProfileInsertPayload,
+  buildTeacherProfilePayload,
+  formatStudentInsertError,
   generateStudentUuid,
   isValidUuid,
   isVerifiedTeacherAuthUser,
@@ -99,6 +102,55 @@ test('buildStudentProfileInsertPayload produces only exact student_profiles colu
   assert.equal(payload.is_active, true);
 });
 
+test('buildTeacherProfilePayload uses valid UUID for both id and auth_user_id and role=teacher (never tch_ prefix)', () => {
+  const teacherAuthUid = generateStudentUuid();
+  const payload = buildTeacherProfilePayload({
+    authUserId: teacherAuthUid,
+    displayName: 'Ibu Yeni Andriyani',
+  });
+
+  assert.equal(isValidUuid(payload.id), true);
+  assert.equal(payload.id.startsWith('tch_'), false);
+  assert.equal(payload.id, teacherAuthUid);
+  assert.equal(payload.auth_user_id, teacherAuthUid);
+  assert.equal(payload.display_name, 'Ibu Yeni Andriyani');
+  assert.equal(payload.role, 'teacher');
+});
+
+test('acquireIsolatedAnonymousAuthSession never creates temporary anonymous sessions to bypass RLS', async () => {
+  const res = await acquireIsolatedAnonymousAuthSession();
+  assert.equal(res.authUserId, null);
+  assert.equal(res.ephemeralClient, null);
+});
+
+test('adding multiple students (first, second, and batch) generates distinct UUIDs with auth_user_id = null', () => {
+  const student1 = buildStudentProfileInsertPayload({
+    displayName: 'Siswa Pertama',
+    characterId: 'bima',
+  });
+  const student2 = buildStudentProfileInsertPayload({
+    displayName: 'Siswa Kedua',
+    characterId: 'sinta',
+  });
+
+  assert.equal(isValidUuid(student1.id), true);
+  assert.equal(isValidUuid(student2.id), true);
+  assert.notEqual(student1.id, student2.id);
+  assert.equal(student1.auth_user_id, null);
+  assert.equal(student2.auth_user_id, null);
+  assert.equal(student1.character, 'BIMA');
+  assert.equal(student2.character, 'SINTA');
+});
+
+test('formatStudentInsertError produces clear Indonesian diagnostic for 42501 RLS errors', () => {
+  const msg = formatStudentInsertError({
+    code: '42501',
+    message: 'new row violates row-level security policy for table "student_profiles"',
+  });
+  assert.equal(msg.includes('Row-Level Security (RLS)'), true);
+  assert.equal(msg.includes('Teachers can insert student profiles'), true);
+});
+
 test('mapDbRowToStudentProfile maps Supabase student_profiles row to StudentProfile', () => {
   const uid = generateStudentUuid();
   const profile = mapDbRowToStudentProfile({
@@ -116,4 +168,5 @@ test('mapDbRowToStudentProfile maps Supabase student_profiles row to StudentProf
   assert.equal(profile.solo.unlockedLevel, 1);
   assert.equal(profile.championship.unlockedLevel, 1);
 });
+
 

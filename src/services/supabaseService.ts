@@ -1,4 +1,4 @@
-import { createEphemeralSupabaseClient, isSupabaseConfigured, supabase } from './supabaseClient';
+import { isSupabaseConfigured, supabase } from './supabaseClient';
 import {
   CharacterId,
   GameMode,
@@ -123,52 +123,190 @@ export function mapDbRowToStudentProfile(
   };
 }
 
-// Cache whether Supabase Anonymous Auth is enabled on this project so batch inserts don't repeat 422 calls
-let anonymousAuthProviderEnabled: boolean | null = null;
-
 /**
- * Attempts to obtain a fresh anonymous auth_user_id via an isolated, non-persisted Supabase client.
- * Never modifies or signs out the active Teacher Admin session on the main supabase client.
+ * Deprecated helper retained for backward reference.
+ * Temporary Anonymous Auth sessions are NEVER used to bypass RLS when inserting student profiles.
  */
-async function acquireIsolatedAnonymousAuthSession(): Promise<{
-  authUserId: string | null;
-  ephemeralClient: ReturnType<typeof createEphemeralSupabaseClient>;
+export async function acquireIsolatedAnonymousAuthSession(): Promise<{
+  authUserId: null;
+  ephemeralClient: null;
 }> {
-  if (anonymousAuthProviderEnabled === false) {
-    return { authUserId: null, ephemeralClient: null };
-  }
-
-  const ephemeralClient = createEphemeralSupabaseClient();
-  if (!ephemeralClient) {
-    return { authUserId: null, ephemeralClient: null };
-  }
-
-  try {
-    const { data, error } = await ephemeralClient.auth.signInAnonymously();
-    if (!error && data?.user?.id && isValidUuid(data.user.id)) {
-      anonymousAuthProviderEnabled = true;
-      return { authUserId: data.user.id, ephemeralClient };
-    }
-    if (
-      error &&
-      (error.status === 422 ||
-        error.message?.toLowerCase().includes('anonymous') ||
-        (error as any).code === 'anonymous_provider_disabled')
-    ) {
-      anonymousAuthProviderEnabled = false;
-    }
-  } catch {
-    // Ignore network or disabled anonymous provider errors
-  }
-
   return { authUserId: null, ephemeralClient: null };
 }
 
+export interface VerifiedTeacherProfileSession {
+  ok: boolean;
+  teacherUserId?: string;
+  teacherEmail?: string;
+  teacherDisplayName?: string;
+  message?: string;
+}
+
 /**
- * Inserts a single student into public.student_profiles safely, handling:
- * 1. Exact schema columns (id, auth_user_id, display_name, character, is_active, created_at)
- * 2. Isolated Anonymous Auth user creation (when enabled) so teacher session is never overwritten
- * 3. Teacher authenticated session insert fallback (with auth_user_id: null or active auth.uid() if required by RLS/constraints)
+ * Builds a valid payload for public.teacher_profiles where both `id` and `auth_user_id` are valid UUIDs.
+ * Never uses non-UUID strings like "tch_<uuid>" which trigger PostgreSQL 22P02 on UUID primary key columns.
+ */
+export function buildTeacherProfilePayload(params: {
+  authUserId: string;
+  displayName: string;
+  createdAt?: string;
+}): {
+  id: string;
+  auth_user_id: string;
+  display_name: string;
+  role: 'teacher';
+  created_at: string;
+} {
+  const validUid = isValidUuid(params.authUserId)
+    ? params.authUserId.trim()
+    : generateStudentUuid();
+  const cleanedName =
+    String(params.displayName || '').trim().replace(/\s+/g, ' ') || 'Ibu/Bapak Guru';
+  return {
+    id: validUid,
+    auth_user_id: validUid,
+    display_name: cleanedName,
+    role: 'teacher',
+    created_at: params.createdAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * Verifies that the active Supabase session belongs to a real authenticated Teacher (non-anonymous, valid email)
+ * AND ensures that a corresponding row exists in `public.teacher_profiles` with `auth_user_id = auth.uid()` and `role = 'teacher'`.
+ * Never signs out or overwrites the active teacher session.
+ */
+export async function ensureVerifiedTeacherSessionAndProfile(): Promise<VerifiedTeacherProfileSession> {
+  if (!isSupabaseConfigured || !supabase) {
+    return {
+      ok: false,
+      message: 'Koneksi Supabase belum aktif.',
+    };
+  }
+
+  try {
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userData?.user) {
+      return {
+        ok: false,
+        message:
+          'Sesi login guru tidak ditemukan atau telah berakhir. Silakan login kembali ke Dashboard Guru menggunakan email dan password Anda.',
+      };
+    }
+
+    const user = userData.user;
+    if (!isVerifiedTeacherAuthUser(user)) {
+      return {
+        ok: false,
+        message:
+          'Akses ditolak: Sesi aktif saat ini bukan akun guru yang terverifikasi (sesi anonim atau siswa tidak diizinkan menambahkan data siswa).',
+      };
+    }
+
+    const teacherUid = user.id.trim();
+    const teacherEmail = user.email!.trim().toLowerCase();
+    const fallbackName =
+      user.user_metadata?.name ||
+      user.user_metadata?.display_name ||
+      teacherEmail.split('@')[0] ||
+      'Ibu/Bapak Guru';
+
+    // Check existing profile in public.teacher_profiles
+    const { data: existingProfile, error: selectErr } = await supabase
+      .from('teacher_profiles')
+      .select('id, auth_user_id, display_name, role, created_at')
+      .eq('auth_user_id', teacherUid)
+      .maybeSingle();
+
+    if (!selectErr && existingProfile) {
+      if (String(existingProfile.role || '').trim().toLowerCase() !== 'teacher') {
+        await supabase
+          .from('teacher_profiles')
+          .update({ role: 'teacher' })
+          .eq('auth_user_id', teacherUid);
+      }
+      return {
+        ok: true,
+        teacherUserId: teacherUid,
+        teacherEmail,
+        teacherDisplayName: existingProfile.display_name || fallbackName,
+      };
+    }
+
+    // Auto-create/sync missing teacher_profiles row using valid UUID `id: teacherUid`
+    const payload = buildTeacherProfilePayload({
+      authUserId: teacherUid,
+      displayName: fallbackName,
+      createdAt: user.created_at || new Date().toISOString(),
+    });
+
+    const { data: upsertedByAuth, error: errByAuth } = await supabase
+      .from('teacher_profiles')
+      .upsert(payload, { onConflict: 'auth_user_id' })
+      .select('id, auth_user_id, display_name, role, created_at')
+      .maybeSingle();
+
+    if (!errByAuth && upsertedByAuth) {
+      return {
+        ok: true,
+        teacherUserId: teacherUid,
+        teacherEmail,
+        teacherDisplayName: upsertedByAuth.display_name || fallbackName,
+      };
+    }
+
+    const { data: upsertedById, error: errById } = await supabase
+      .from('teacher_profiles')
+      .upsert(payload, { onConflict: 'id' })
+      .select('id, auth_user_id, display_name, role, created_at')
+      .maybeSingle();
+
+    if (!errById && upsertedById) {
+      return {
+        ok: true,
+        teacherUserId: teacherUid,
+        teacherEmail,
+        teacherDisplayName: upsertedById.display_name || fallbackName,
+      };
+    }
+
+    const syncErrMsg = (errById || errByAuth || selectErr)?.message || 'Gagal menyinkronkan teacher_profiles.';
+    return {
+      ok: false,
+      message: `Profil guru pada tabel teacher_profiles belum terdaftar dan gagal disinkronkan (${syncErrMsg}). Pastikan akun guru memiliki profil aktif di public.teacher_profiles dengan role='teacher'.`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: err?.message || 'Gagal memverifikasi sesi dan profil guru.',
+    };
+  }
+}
+
+/**
+ * Formats Supabase PostgREST / RLS errors during student_profiles INSERT into clear Indonesian diagnostics.
+ */
+export function formatStudentInsertError(err: any): string {
+  const rawMsg = String(err?.message || err || 'Kesalahan tidak diketahui').trim();
+  const code = String(err?.code || '').trim();
+
+  if (
+    code === '42501' ||
+    rawMsg.toLowerCase().includes('row-level security policy') ||
+    rawMsg.toLowerCase().includes('permission denied')
+  ) {
+    return `Gagal menambahkan siswa karena ditolak oleh kebijakan Row-Level Security (RLS) pada tabel "student_profiles" (${rawMsg}). Pastikan policy INSERT khusus guru ("Teachers can insert student profiles") yang memverifikasi auth.uid() pada public.teacher_profiles (role='teacher') sudah diaktifkan di Supabase SQL Editor.`;
+  }
+
+  return `Gagal menambahkan siswa ke Supabase: ${rawMsg}`;
+}
+
+/**
+ * Inserts a single student into public.student_profiles safely using ONLY the verified Teacher session:
+ * 1. Verifies active teacher session via supabase.auth.getUser() and ensures public.teacher_profiles row exists.
+ * 2. Never uses temporary Anonymous Auth sessions to bypass RLS and never overwrites the teacher session.
+ * 3. Sets auth_user_id to null for teacher-created roster students (never assigns teacher's auth.uid() to a student).
+ * 4. Sends only exact valid columns: id, auth_user_id, display_name, character, is_active, created_at.
  */
 async function insertStudentProfileRowInSupabase(params: {
   displayName: string;
@@ -179,9 +317,18 @@ async function insertStudentProfileRowInSupabase(params: {
     return { data: null, error: new Error('Supabase belum terkonfigurasi.') };
   }
 
-  const { authUserId: anonUserId, ephemeralClient } = await acquireIsolatedAnonymousAuthSession();
+  // 1. Verify teacher session and ensure public.teacher_profiles row exists with role='teacher'
+  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
+  if (!teacherCheck.ok) {
+    return {
+      data: null,
+      error: new Error(teacherCheck.message || 'Sesi guru tidak terverifikasi.'),
+    };
+  }
+
+  // 2. Build strict payload with auth_user_id = null (student roster entry created by teacher)
   const payload = buildStudentProfileInsertPayload({
-    authUserId: anonUserId,
+    authUserId: null,
     displayName: params.displayName,
     characterId: params.characterId,
     isActive: true,
@@ -190,62 +337,21 @@ async function insertStudentProfileRowInSupabase(params: {
 
   const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
 
-  // Attempt 1: Insert using the main supabase client (carries Teacher's authenticated session)
-  const { data: insertedMain, error: errMain } = await supabase
+  // 3. Insert directly using the verified Teacher session on main supabase client
+  const { data: inserted, error: insertErr } = await supabase
     .from('student_profiles')
     .insert(payload)
     .select(selectCols)
     .single();
 
-  if (!errMain && insertedMain) {
-    return { data: insertedMain, error: null };
+  if (!insertErr && inserted) {
+    return { data: inserted, error: null };
   }
 
-  // Attempt 2: If an isolated Anonymous Auth session was created and RLS requires auth.uid() === auth_user_id,
-  // insert using the ephemeral client whose JWT sub matches anonUserId.
-  if (ephemeralClient && anonUserId) {
-    const { data: insertedAnon, error: errAnon } = await ephemeralClient
-      .from('student_profiles')
-      .insert(payload)
-      .select(selectCols)
-      .single();
-
-    if (!errAnon && insertedAnon) {
-      return { data: insertedAnon, error: null };
-    }
-  }
-
-  // Attempt 3: If Anonymous Auth is disabled (anonUserId is null) and the database requires a non-null auth_user_id
-  // or RLS checks auth.uid() = auth_user_id, check the currently active authenticated user on main supabase client.
-  if (
-    !anonUserId &&
-    errMain &&
-    (errMain.code === '42501' || errMain.code === '23502' || errMain.code === '23503')
-  ) {
-    try {
-      const { data: userData } = await supabase.auth.getUser();
-      const activeUid = userData?.user?.id;
-      if (activeUid && isValidUuid(activeUid)) {
-        const retryWithActiveUid = {
-          ...payload,
-          auth_user_id: activeUid,
-        };
-        const { data: insertedWithUid, error: errWithUid } = await supabase
-          .from('student_profiles')
-          .insert(retryWithActiveUid)
-          .select(selectCols)
-          .single();
-
-        if (!errWithUid && insertedWithUid) {
-          return { data: insertedWithUid, error: null };
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  return { data: null, error: errMain };
+  return {
+    data: null,
+    error: new Error(formatStudentInsertError(insertErr)),
+  };
 }
 
 export interface SaveGameAttemptParams {
@@ -556,7 +662,7 @@ export async function adminAddSingleStudent(
       if (insertErr) {
         return {
           ok: false,
-          message: `Gagal menambahkan siswa ke Supabase: ${insertErr.message}`,
+          message: insertErr.message || 'Gagal menambahkan siswa ke Supabase.',
         };
       }
     } catch (e: any) {
@@ -596,7 +702,8 @@ export async function adminAddSingleStudent(
 
 /**
  * Teacher Admin: Add Bulk Batch Students to Class 5 Roster in Supabase student_profiles.
- * Uses only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
+ * Uses only existing columns (id, auth_user_id, display_name, character, is_active, created_at)
+ * and executes strictly under the verified Teacher session without Anonymous Auth bypass.
  */
 export async function adminAddBatchStudents(
   names: string[],
@@ -612,24 +719,30 @@ export async function adminAddBatchStudents(
 
   if (isSupabaseConfigured && supabase) {
     try {
+      // 1. Verify active teacher session and ensure public.teacher_profiles row exists with role='teacher'
+      const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
+      if (!teacherCheck.ok) {
+        return {
+          ok: false,
+          message: teacherCheck.message || 'Sesi guru tidak terverifikasi.',
+        };
+      }
+
       const now = new Date().toISOString();
       const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
 
-      // Build rows strictly matching public.student_profiles schema
-      const rowsToInsert: StudentProfileDbInsertPayload[] = [];
-      for (const cleanedName of validNames) {
-        const { authUserId } = await acquireIsolatedAnonymousAuthSession();
-        rowsToInsert.push(
-          buildStudentProfileInsertPayload({
-            authUserId,
-            displayName: cleanedName,
-            characterId,
-            isActive: true,
-            createdAt: now,
-          }),
-        );
-      }
+      // 2. Build rows strictly matching public.student_profiles schema with auth_user_id = null
+      const rowsToInsert: StudentProfileDbInsertPayload[] = validNames.map((cleanedName) =>
+        buildStudentProfileInsertPayload({
+          authUserId: null,
+          displayName: cleanedName,
+          characterId,
+          isActive: true,
+          createdAt: now,
+        }),
+      );
 
+      // 3. Insert directly using the verified Teacher session on main supabase client
       const { data: insertedList, error: insertErr } = await supabase
         .from('student_profiles')
         .insert(rowsToInsert)
@@ -646,34 +759,9 @@ export async function adminAddBatchStudents(
         };
       }
 
-      // Fallback: insert one-by-one if bulk insert encountered an RLS/auth_user_id constraint
-      const insertedProfiles: StudentProfile[] = [];
-      let lastErrorMsg = insertErr?.message || '';
-      for (const cleanedName of validNames) {
-        const { data: singleInserted, error: singleErr } = await insertStudentProfileRowInSupabase({
-          displayName: cleanedName,
-          characterId,
-          createdAt: now,
-        });
-        if (!singleErr && singleInserted) {
-          insertedProfiles.push(mapDbRowToStudentProfile(singleInserted));
-        } else if (singleErr) {
-          lastErrorMsg = singleErr.message;
-        }
-      }
-
-      if (insertedProfiles.length > 0) {
-        return {
-          ok: true,
-          count: insertedProfiles.length,
-          students: insertedProfiles,
-          message: `Berhasil menambahkan ${insertedProfiles.length} siswa baru ke Kelas 5!`,
-        };
-      }
-
       return {
         ok: false,
-        message: `Gagal menambah daftar siswa ke Supabase: ${lastErrorMsg || 'Terjadi kendala izin tabel.'}`,
+        message: formatStudentInsertError(insertErr),
       };
     } catch (e: any) {
       return {
@@ -1524,22 +1612,29 @@ export async function updateTeacherNewPassword(
     } else if (existingProfile) {
       resolvedTeacherName = existingProfile.display_name || resolvedTeacherName;
     } else {
-      const newProfilePayload = {
-        id: `tch_${updatedUser.id}`,
-        auth_user_id: updatedUser.id,
-        display_name: resolvedTeacherName,
-        role: 'teacher',
-        created_at: updatedUser.created_at || now,
-      };
+      const newProfilePayload = buildTeacherProfilePayload({
+        authUserId: updatedUser.id,
+        displayName: resolvedTeacherName,
+        createdAt: updatedUser.created_at || now,
+      });
 
       const { data: insertedProfile, error: insertErr } = await supabase
         .from('teacher_profiles')
-        .upsert(newProfilePayload, { onConflict: 'id' })
+        .upsert(newProfilePayload, { onConflict: 'auth_user_id' })
         .select('id, auth_user_id, display_name, role, created_at')
         .maybeSingle();
 
       if (insertErr) {
-        profileSyncWarning = `Password berhasil diperbarui, namun sinkronisasi profil teacher_profiles mengalami kendala: ${insertErr.message}`;
+        const { data: fallbackProfile, error: fallbackErr } = await supabase
+          .from('teacher_profiles')
+          .upsert(newProfilePayload, { onConflict: 'id' })
+          .select('id, auth_user_id, display_name, role, created_at')
+          .maybeSingle();
+        if (fallbackErr) {
+          profileSyncWarning = `Password berhasil diperbarui, namun sinkronisasi profil teacher_profiles mengalami kendala: ${fallbackErr.message}`;
+        } else if (fallbackProfile?.display_name) {
+          resolvedTeacherName = fallbackProfile.display_name;
+        }
       } else if (insertedProfile?.display_name) {
         resolvedTeacherName = insertedProfile.display_name;
       }
