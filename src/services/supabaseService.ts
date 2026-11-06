@@ -1,15 +1,219 @@
-import { isSupabaseConfigured, supabase } from './supabaseClient';
 import {
+  createEphemeralSupabaseClient,
+  isSupabaseConfigured,
+  studentSupabase,
+  supabase,
+} from './supabaseClient';
+import {
+  ChampionshipLocationRecord,
   CharacterId,
   GameMode,
+  SoloLocationProgress,
   StudentProfile,
 } from '../types/game';
 import {
+  calculateAdventureAcademicGrade,
+  calculateMedal,
+  computeLevelUnlockState,
   createEmptyStudentProfile,
   normalizePlayerName,
 } from '../game/rules';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const STUDENT_INTERNAL_EMAIL_DOMAIN = 'student.aquamath.id';
+
+export interface OfficialStudentAccountSpec {
+  no: number;
+  displayName: string;
+  username: string;
+  defaultPassword: string;
+  character: 'BIMA' | 'SINTA';
+  characterId: CharacterId;
+  authUserId: string;
+}
+
+/**
+ * Daftar Resmi 14 Akun Siswa Kelas 5 AQUA MATH ADVENTURE.
+ * Setiap akun telah terdaftar di Supabase Auth (auth.users) dengan UUID asli di bawah ini.
+ */
+export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
+  {
+    no: 1,
+    displayName: 'Afina Felisia Putri',
+    username: 'afina01',
+    defaultPassword: 'Aqua@2601',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: 'cae44b10-9331-4e44-bc28-7e737a62a49c',
+  },
+  {
+    no: 2,
+    displayName: 'Afiz El Haddadi',
+    username: 'afiz02',
+    defaultPassword: 'Aqua@2602',
+    character: 'BIMA',
+    characterId: 'bima',
+    authUserId: 'be935b72-73a2-4429-955e-965168bed5ce',
+  },
+  {
+    no: 3,
+    displayName: 'ARJUNA SURYA WIKRAMA',
+    username: 'arjuna03',
+    defaultPassword: 'Aqua@2603',
+    character: 'BIMA',
+    characterId: 'bima',
+    authUserId: 'f8e45914-dd24-45df-aed7-dcf34be05912',
+  },
+  {
+    no: 4,
+    displayName: 'DINDA ISMAWATI',
+    username: 'dinda04',
+    defaultPassword: 'Aqua@2604',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: '77b1cd3d-af92-45c8-b709-cb66ab6a9bbf',
+  },
+  {
+    no: 5,
+    displayName: 'Faniya Nur Hafisah',
+    username: 'faniya05',
+    defaultPassword: 'Aqua@2605',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: '570ba376-4134-4845-847f-e408ea786d81',
+  },
+  {
+    no: 6,
+    displayName: 'Gista Novita Nur Amaliana',
+    username: 'gista06',
+    defaultPassword: 'Aqua@2606',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: 'f1052608-bcf9-4071-9c01-89800c55273f',
+  },
+  {
+    no: 7,
+    displayName: 'HANAFI MUSLIMAH',
+    username: 'hanafi07',
+    defaultPassword: 'Aqua@2607',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: 'a669b5c4-62c2-4441-8f8b-484e2d85323a',
+  },
+  {
+    no: 8,
+    displayName: 'Muhammad Fiqri',
+    username: 'fiqri08',
+    defaultPassword: 'Aqua@2608',
+    character: 'BIMA',
+    characterId: 'bima',
+    authUserId: 'd305d926-0db6-428c-ac50-315a0dd1c940',
+  },
+  {
+    no: 9,
+    displayName: 'PUTRI DWI SEPTIANI',
+    username: 'putri09',
+    defaultPassword: 'Aqua@2609',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: '3812cbe6-4d83-40f5-aa60-02be3c175a37',
+  },
+  {
+    no: 10,
+    displayName: 'Revan Safi Saputra',
+    username: 'revan10',
+    defaultPassword: 'Aqua@2610',
+    character: 'BIMA',
+    characterId: 'bima',
+    authUserId: '05ca3caa-4f22-4514-80db-fff5edcc3861',
+  },
+  {
+    no: 11,
+    displayName: 'Saskia Aprilianti',
+    username: 'saskia11',
+    defaultPassword: 'Aqua@2611',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: '47efc5df-09b3-4362-837b-7b41223d0fb2',
+  },
+  {
+    no: 12,
+    displayName: 'SHAREEFA JEHAN AMIRA',
+    username: 'shareefa12',
+    defaultPassword: 'Aqua@2612',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: 'b3ad69ad-b592-405e-ae79-abea8cde7be0',
+  },
+  {
+    no: 13,
+    displayName: 'Suci Mulia Sari',
+    username: 'suci13',
+    defaultPassword: 'Aqua@2613',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: 'b063ade8-5267-4c36-88fb-5b485f54c228',
+  },
+  {
+    no: 14,
+    displayName: 'Tiwi Safitri',
+    username: 'tiwi14',
+    defaultPassword: 'Aqua@2614',
+    character: 'SINTA',
+    characterId: 'sinta',
+    authUserId: '261109d3-2fa2-4cb1-94f1-953c540738a5',
+  },
+];
+
+/**
+ * Normalizes a student username (lowercase alphanumeric + underscore) and converts it
+ * to the internal email format: <username>@student.aquamath.id
+ */
+export function normalizeStudentUsername(rawUsername: string): string {
+  const cleaned = String(rawUsername || '')
+    .trim()
+    .toLowerCase();
+  if (cleaned.endsWith(`@${STUDENT_INTERNAL_EMAIL_DOMAIN}`)) {
+    return cleaned
+      .slice(0, -(STUDENT_INTERNAL_EMAIL_DOMAIN.length + 1))
+      .replace(/[^a-z0-9_]/g, '');
+  }
+  return cleaned.replace(/[^a-z0-9_]/g, '');
+}
+
+export function studentUsernameToInternalEmail(username: string): string {
+  const norm = normalizeStudentUsername(username);
+  return `${norm}@${STUDENT_INTERNAL_EMAIL_DOMAIN}`;
+}
+
+export function findOfficialStudentSpec(
+  query: {
+    authUserId?: string | null;
+    username?: string | null;
+    displayName?: string | null;
+  },
+): OfficialStudentAccountSpec | undefined {
+  if (query.authUserId) {
+    const byAuth = OFFICIAL_14_STUDENTS.find(
+      (s) => s.authUserId.toLowerCase() === String(query.authUserId).trim().toLowerCase(),
+    );
+    if (byAuth) return byAuth;
+  }
+  if (query.username) {
+    const normU = normalizeStudentUsername(query.username);
+    const byUser = OFFICIAL_14_STUDENTS.find((s) => s.username.toLowerCase() === normU);
+    if (byUser) return byUser;
+  }
+  if (query.displayName) {
+    const normName = normalizePlayerName(query.displayName);
+    const byName = OFFICIAL_14_STUDENTS.find(
+      (s) => normalizePlayerName(s.displayName) === normName,
+    );
+    if (byName) return byName;
+  }
+  return undefined;
+}
 
 /**
  * Checks whether a value is a valid RFC 4122 UUID string.
@@ -19,7 +223,7 @@ export function isValidUuid(value: unknown): boolean {
 }
 
 /**
- * Generates a unique UUID v4 for student_profiles.id.
+ * Generates a unique UUID v4 for local fallback use when needed.
  */
 export function generateStudentUuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -52,41 +256,46 @@ export function mapDbCharacterToCharacterId(dbCharacter?: unknown): CharacterId 
   return 'sinta';
 }
 
+/**
+ * Strict INSERT payload for public.student_profiles:
+ * - id: omitted so database default gen_random_uuid() is used
+ * - created_at: omitted so database default now() is used
+ * - auth_user_id: real UUID from auth.users
+ * - display_name: student name
+ * - character: 'BIMA' | 'SINTA'
+ * - is_active: boolean
+ */
 export interface StudentProfileDbInsertPayload {
-  id: string;
-  auth_user_id: string | null;
+  auth_user_id: string;
   display_name: string;
   character: 'BIMA' | 'SINTA';
   is_active: boolean;
-  created_at: string;
 }
 
 /**
- * Builds a strict payload matching the exact columns of public.student_profiles:
- * - id (UUID)
- * - auth_user_id (UUID | null)
- * - display_name (TEXT)
- * - character ('BIMA' | 'SINTA')
- * - is_active (BOOLEAN)
- * - created_at (TIMESTAMPTZ)
- * Never includes non-existent columns such as character_id, name, username, normalized_name, solo_data, or last_active_at.
+ * Builds a strict payload matching the exact rules for INSERT into public.student_profiles:
+ * - Omits `id` and `created_at` so PostgreSQL defaults (`gen_random_uuid()` and `now()`) apply.
+ * - Requires a valid `auth_user_id` UUID from `auth.users`.
+ * - Never includes non-existent columns (`character_id`, `name`, `username`, `normalized_name`, `solo_data`, `last_active_at`).
  */
 export function buildStudentProfileInsertPayload(params: {
-  id?: string;
-  authUserId?: string | null;
+  authUserId: string;
   displayName: string;
   characterId?: CharacterId | string | null;
   isActive?: boolean;
-  createdAt?: string;
 }): StudentProfileDbInsertPayload {
   const cleanedName = String(params.displayName || '').trim().replace(/\s+/g, ' ');
+  const rawAuthUid = String(params.authUserId || '').trim();
+  if (!isValidUuid(rawAuthUid)) {
+    throw new Error(
+      'auth_user_id wajib menggunakan UUID asli yang valid dari Supabase Auth (auth.users).',
+    );
+  }
   return {
-    id: isValidUuid(params.id) ? String(params.id).trim() : generateStudentUuid(),
-    auth_user_id: isValidUuid(params.authUserId) ? String(params.authUserId).trim() : null,
+    auth_user_id: rawAuthUid,
     display_name: cleanedName,
     character: mapCharacterIdToDbCharacter(params.characterId),
     is_active: params.isActive !== undefined ? Boolean(params.isActive) : true,
-    created_at: params.createdAt || new Date().toISOString(),
   };
 }
 
@@ -97,25 +306,52 @@ export function mapDbRowToStudentProfile(
   row: any,
   existingLocal?: StudentProfile,
 ): StudentProfile {
-  const id = String(row?.id || existingLocal?.id || generateStudentUuid());
+  const officialSpec = findOfficialStudentSpec({
+    authUserId: row?.auth_user_id,
+    username: row?.username || existingLocal?.username,
+    displayName: row?.display_name || row?.name || existingLocal?.name,
+  });
+
+  const id = String(
+    row?.id || existingLocal?.id || officialSpec?.authUserId || generateStudentUuid(),
+  );
+  const authUserId = isValidUuid(row?.auth_user_id)
+    ? String(row.auth_user_id).trim()
+    : existingLocal?.authUserId || officialSpec?.authUserId || undefined;
   const displayName = String(
-    row?.display_name || row?.name || existingLocal?.name || 'Siswa Aqua City',
+    row?.display_name || row?.name || officialSpec?.displayName || existingLocal?.name || 'Siswa Aqua City',
   )
     .trim()
     .replace(/\s+/g, ' ');
   const characterId = mapDbCharacterToCharacterId(
-    row?.character ?? row?.character_id ?? existingLocal?.characterId,
+    row?.character ?? row?.character_id ?? officialSpec?.character ?? existingLocal?.characterId,
   );
   const normName = normalizePlayerName(displayName);
+  const username =
+    row?.username ||
+    officialSpec?.username ||
+    existingLocal?.username ||
+    normName.replace(/[^a-z0-9_]/g, '');
   const createdAt = row?.created_at || existingLocal?.createdAt || new Date().toISOString();
+  const isActive =
+    row?.is_active !== undefined
+      ? Boolean(row.is_active)
+      : existingLocal?.isActive !== undefined
+        ? existingLocal.isActive
+        : true;
+  const profileLinked = Boolean(row?.id && isValidUuid(row?.auth_user_id));
   const empty = createEmptyStudentProfile(id, displayName, characterId);
 
   return {
     id,
+    authUserId,
     name: displayName,
-    username: normName,
+    username,
     normalizedName: normName,
     characterId,
+    isActive,
+    profileLinked,
+    tempPasswordHint: officialSpec?.defaultPassword || existingLocal?.tempPasswordHint,
     createdAt,
     lastActiveAt: existingLocal?.lastActiveAt || createdAt,
     solo: existingLocal?.solo || empty.solo,
@@ -144,7 +380,6 @@ export interface VerifiedTeacherProfileSession {
 
 /**
  * Builds a valid payload for public.teacher_profiles where both `id` and `auth_user_id` are valid UUIDs.
- * Never uses non-UUID strings like "tch_<uuid>" which trigger PostgreSQL 22P02 on UUID primary key columns.
  */
 export function buildTeacherProfilePayload(params: {
   authUserId: string;
@@ -169,6 +404,21 @@ export function buildTeacherProfilePayload(params: {
     role: 'teacher',
     created_at: params.createdAt || new Date().toISOString(),
   };
+}
+
+/**
+ * Helper: Validates whether a Supabase Auth user object represents a real, non-anonymous teacher account with a valid email.
+ * Strictly rejects student accounts (@student.aquamath.id or role='student').
+ */
+export function isVerifiedTeacherAuthUser(user: any): boolean {
+  if (!user || typeof user.id !== 'string' || !user.id.trim()) return false;
+  if (user.is_anonymous === true) return false;
+  if (user.app_metadata?.provider === 'anonymous') return false;
+  if (user.user_metadata?.role === 'student') return false;
+  const email = typeof user.email === 'string' ? user.email.trim().toLowerCase() : '';
+  if (!email || !email.includes('@')) return false;
+  if (email.endsWith(`@${STUDENT_INTERNAL_EMAIL_DOMAIN}`)) return false;
+  return true;
 }
 
 /**
@@ -270,7 +520,8 @@ export async function ensureVerifiedTeacherSessionAndProfile(): Promise<Verified
       };
     }
 
-    const syncErrMsg = (errById || errByAuth || selectErr)?.message || 'Gagal menyinkronkan teacher_profiles.';
+    const syncErrMsg =
+      (errById || errByAuth || selectErr)?.message || 'Gagal menyinkronkan teacher_profiles.';
     return {
       ok: false,
       message: `Profil guru pada tabel teacher_profiles belum terdaftar dan gagal disinkronkan (${syncErrMsg}). Pastikan akun guru memiliki profil aktif di public.teacher_profiles dengan role='teacher'.`,
@@ -295,49 +546,168 @@ export function formatStudentInsertError(err: any): string {
     rawMsg.toLowerCase().includes('row-level security policy') ||
     rawMsg.toLowerCase().includes('permission denied')
   ) {
-    return `Gagal menambahkan siswa karena ditolak oleh kebijakan Row-Level Security (RLS) pada tabel "student_profiles" (${rawMsg}). Pastikan policy INSERT khusus guru ("Teachers can insert student profiles") yang memverifikasi auth.uid() pada public.teacher_profiles (role='teacher') sudah diaktifkan di Supabase SQL Editor.`;
+    return `Gagal menambahkan profil ke tabel "student_profiles" karena kebijakan Row-Level Security (RLS) (${rawMsg}). Jalankan SQL Policy "Teachers can insert student profiles" atau blok INSERT 14 siswa pada Supabase SQL Editor.`;
   }
 
   return `Gagal menambahkan siswa ke Supabase: ${rawMsg}`;
 }
 
 /**
- * Inserts a single student into public.student_profiles safely using ONLY the verified Teacher session:
- * 1. Verifies active teacher session via supabase.auth.getUser() and ensures public.teacher_profiles row exists.
- * 2. Never uses temporary Anonymous Auth sessions to bypass RLS and never overwrites the teacher session.
- * 3. Sets auth_user_id to null for teacher-created roster students (never assigns teacher's auth.uid() to a student).
- * 4. Sends only exact valid columns: id, auth_user_id, display_name, character, is_active, created_at.
+ * Creates an isolated ephemeral Supabase client (no session persistence) so creating or verifying
+ * a student account in Supabase Auth NEVER touches or overwrites the logged-in Teacher's session.
  */
-async function insertStudentProfileRowInSupabase(params: {
+function createEphemeralAuthClient() {
+  return createEphemeralSupabaseClient();
+}
+
+/**
+ * Creates or signs into a Student Auth account in Supabase Auth using an isolated client
+ * (without affecting the Teacher's active session) and returns the real `auth.users.id` UUID.
+ */
+async function ensureStudentAuthUserIsolated(params: {
+  username: string;
+  password: string;
   displayName: string;
-  characterId: CharacterId;
-  createdAt?: string;
+  character: 'BIMA' | 'SINTA';
+}): Promise<{ ok: boolean; authUserId?: string; message?: string }> {
+  const normUsername = normalizeStudentUsername(params.username);
+  if (!normUsername || normUsername.length < 3) {
+    return { ok: false, message: 'Username siswa minimal 3 karakter huruf/angka.' };
+  }
+  const internalEmail = studentUsernameToInternalEmail(normUsername);
+
+  // Check if this matches one of the 14 pre-verified accounts first
+  const officialSpec = findOfficialStudentSpec({ username: normUsername });
+
+  const ephemeral = createEphemeralAuthClient();
+  if (!ephemeral) {
+    if (officialSpec) {
+      return { ok: true, authUserId: officialSpec.authUserId };
+    }
+    return { ok: false, message: 'Supabase belum terkonfigurasi.' };
+  }
+
+  try {
+    // 1. Try signing in first in case the account already exists in auth.users
+    const { data: signInData, error: signInErr } = await ephemeral.auth.signInWithPassword({
+      email: internalEmail,
+      password: params.password,
+    });
+
+    if (!signInErr && signInData?.user?.id) {
+      return { ok: true, authUserId: signInData.user.id };
+    }
+
+    // 2. If not yet registered, sign up in Supabase Auth
+    const { data: signUpData, error: signUpErr } = await ephemeral.auth.signUp({
+      email: internalEmail,
+      password: params.password,
+      options: {
+        data: {
+          username: normUsername,
+          display_name: params.displayName,
+          name: params.displayName,
+          character: params.character,
+          role: 'student',
+        },
+      },
+    });
+
+    if (!signUpErr && signUpData?.user?.id) {
+      return { ok: true, authUserId: signUpData.user.id };
+    }
+
+    // 3. If user already exists in auth.users and matches one of the 14 official accounts
+    if (officialSpec) {
+      return { ok: true, authUserId: officialSpec.authUserId };
+    }
+
+    return {
+      ok: false,
+      message:
+        signUpErr?.message ||
+        signInErr?.message ||
+        'Gagal menyiapkan akun autentikasi siswa di Supabase Auth.',
+    };
+  } catch (e: any) {
+    if (officialSpec) {
+      return { ok: true, authUserId: officialSpec.authUserId };
+    }
+    return { ok: false, message: e?.message || 'Kesalahan jaringan ke Supabase Auth.' };
+  }
+}
+
+/**
+ * Inserts or updates a student row in public.student_profiles using a real auth_user_id UUID
+ * and omitting `id` and `created_at` so PostgreSQL defaults apply.
+ */
+async function upsertStudentProfileWithRealAuthId(params: {
+  authUserId: string;
+  displayName: string;
+  characterId: CharacterId | string;
+  isActive?: boolean;
 }): Promise<{ data: any | null; error: any | null }> {
   if (!isSupabaseConfigured || !supabase) {
     return { data: null, error: new Error('Supabase belum terkonfigurasi.') };
   }
 
-  // 1. Verify teacher session and ensure public.teacher_profiles row exists with role='teacher'
-  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
-  if (!teacherCheck.ok) {
-    return {
-      data: null,
-      error: new Error(teacherCheck.message || 'Sesi guru tidak terverifikasi.'),
-    };
-  }
-
-  // 2. Build strict payload with auth_user_id = null (student roster entry created by teacher)
   const payload = buildStudentProfileInsertPayload({
-    authUserId: null,
+    authUserId: params.authUserId,
     displayName: params.displayName,
     characterId: params.characterId,
-    isActive: true,
-    createdAt: params.createdAt,
+    isActive: params.isActive ?? true,
   });
 
   const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
 
-  // 3. Insert directly using the verified Teacher session on main supabase client
+  // 1. Check if a row with this auth_user_id already exists
+  const { data: existingByAuth } = await supabase
+    .from('student_profiles')
+    .select(selectCols)
+    .eq('auth_user_id', payload.auth_user_id)
+    .maybeSingle();
+
+  if (existingByAuth) {
+    const { data: updated, error: updateErr } = await supabase
+      .from('student_profiles')
+      .update({
+        display_name: payload.display_name,
+        character: payload.character,
+        is_active: payload.is_active,
+      })
+      .eq('id', existingByAuth.id)
+      .select(selectCols)
+      .maybeSingle();
+
+    return { data: updated || existingByAuth, error: updateErr };
+  }
+
+  // 2. Check if a row with the same display_name exists without auth_user_id
+  const { data: existingByName } = await supabase
+    .from('student_profiles')
+    .select(selectCols)
+    .ilike('display_name', payload.display_name)
+    .maybeSingle();
+
+  if (existingByName) {
+    const { data: updated, error: updateErr } = await supabase
+      .from('student_profiles')
+      .update({
+        auth_user_id: payload.auth_user_id,
+        display_name: payload.display_name,
+        character: payload.character,
+        is_active: payload.is_active,
+      })
+      .eq('id', existingByName.id)
+      .select(selectCols)
+      .maybeSingle();
+
+    if (!updateErr && updated) {
+      return { data: updated, error: null };
+    }
+  }
+
+  // 3. Insert new row omitting `id` and `created_at` so database defaults apply
   const { data: inserted, error: insertErr } = await supabase
     .from('student_profiles')
     .insert(payload)
@@ -352,6 +722,472 @@ async function insertStudentProfileRowInSupabase(params: {
     data: null,
     error: new Error(formatStudentInsertError(insertErr)),
   };
+}
+
+/**
+ * Synchronizes all 14 official Class 5 student accounts between auth.users and public.student_profiles.
+ */
+export async function syncOfficial14StudentAccounts(): Promise<{
+  ok: boolean;
+  syncedCount: number;
+  authReadyCount: number;
+  students: StudentProfile[];
+  rlsBlocked: boolean;
+  message: string;
+}> {
+  // Try server-side Admin API first if SUPABASE_SERVICE_ROLE_KEY is configured on server
+  try {
+    const token =
+      sessionStorage.getItem('aqua_math_admin_token_v1') ||
+      sessionStorage.getItem('aqua_admin_token') ||
+      '';
+    const res = await fetch('/api/admin/provision-students', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ students: OFFICIAL_14_STUDENTS }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.students) && data.students.length > 0) {
+        const mapped = data.students.map((row: any) => mapDbRowToStudentProfile(row));
+        return {
+          ok: true,
+          syncedCount: mapped.length,
+          authReadyCount: 14,
+          students: mapped,
+          rlsBlocked: false,
+          message:
+            data.message ||
+            'Berhasil menyinkronkan 14 akun siswa Kelas 5 di auth.users dan public.student_profiles!',
+        };
+      }
+    }
+  } catch {
+    // Fallback to client-side Teacher session sync
+  }
+
+  if (!isSupabaseConfigured || !supabase) {
+    return {
+      ok: false,
+      syncedCount: 0,
+      authReadyCount: 14,
+      students: [],
+      rlsBlocked: false,
+      message: 'Koneksi Supabase belum aktif.',
+    };
+  }
+
+  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
+  if (!teacherCheck.ok) {
+    return {
+      ok: false,
+      syncedCount: 0,
+      authReadyCount: 14,
+      students: [],
+      rlsBlocked: false,
+      message: teacherCheck.message || 'Sesi guru tidak terverifikasi.',
+    };
+  }
+
+  const payloads: StudentProfileDbInsertPayload[] = OFFICIAL_14_STUDENTS.map((spec) =>
+    buildStudentProfileInsertPayload({
+      authUserId: spec.authUserId,
+      displayName: spec.displayName,
+      characterId: spec.characterId,
+      isActive: true,
+    }),
+  );
+
+  const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
+  const { data: upsertedRows, error: upsertErr } = await supabase
+    .from('student_profiles')
+    .upsert(payloads, { onConflict: 'auth_user_id' })
+    .select(selectCols);
+
+  if (!upsertErr && Array.isArray(upsertedRows)) {
+    const mapped = upsertedRows.map((row) => mapDbRowToStudentProfile(row));
+    return {
+      ok: true,
+      syncedCount: mapped.length,
+      authReadyCount: 14,
+      students: mapped,
+      rlsBlocked: false,
+      message: `Berhasil menyinkronkan ${mapped.length} profil siswa Kelas 5 ke tabel public.student_profiles!`,
+    };
+  }
+
+  const errMsg = formatStudentInsertError(upsertErr);
+  const isRls =
+    String(upsertErr?.code || '') === '42501' ||
+    String(upsertErr?.message || '').toLowerCase().includes('row-level security');
+
+  return {
+    ok: false,
+    syncedCount: 0,
+    authReadyCount: 14,
+    students: OFFICIAL_14_STUDENTS.map((spec) =>
+      mapDbRowToStudentProfile({
+        id: spec.authUserId,
+        auth_user_id: spec.authUserId,
+        display_name: spec.displayName,
+        character: spec.character,
+        username: spec.username,
+        is_active: true,
+      }),
+    ),
+    rlsBlocked: isRls,
+    message: `Ke-14 akun siswa SUDAH AKTIF di Supabase Auth (auth.users), namun sinkronisasi ke tabel public.student_profiles memerlukan izin RLS Guru: ${errMsg}`,
+  };
+}
+
+/**
+ * Pure helper: Computes a student's Solo & Championship progress strictly from
+ * verified Supabase `game_attempts` and `game_progress` rows (never from unverified localStorage).
+ */
+export function applySupabaseAttemptsAndProgressToProfile(
+  baseProfile: StudentProfile,
+  attemptsRows: any[],
+  progressRows: any[] = [],
+  championshipSnapshot?: any,
+): StudentProfile {
+  const empty = createEmptyStudentProfile(
+    baseProfile.id,
+    baseProfile.name,
+    baseProfile.characterId,
+  );
+  const profile: StudentProfile = {
+    ...JSON.parse(JSON.stringify(baseProfile)),
+    solo: empty.solo,
+    championship: empty.championship,
+  };
+
+  const effectiveAttempts =
+    Array.isArray(attemptsRows) && attemptsRows.length > 0
+      ? attemptsRows
+      : Array.isArray(championshipSnapshot?.verifiedAttempts)
+        ? championshipSnapshot.verifiedAttempts
+        : [];
+
+  const effectiveProgress =
+    Array.isArray(progressRows) && progressRows.length > 0
+      ? progressRows
+      : Array.isArray(championshipSnapshot?.verifiedProgress)
+        ? championshipSnapshot.verifiedProgress
+        : [];
+
+  const champModeAttemptIds = new Set<string>(
+    Array.isArray(championshipSnapshot?.championshipAttemptIds)
+      ? championshipSnapshot.championshipAttemptIds
+      : [],
+  );
+
+  const soloLocs: Record<number, SoloLocationProgress> = {};
+  const champLocs: Record<number, ChampionshipLocationRecord> = {};
+  let champTotalTime = 0;
+
+  if (effectiveAttempts.length > 0) {
+    for (const row of effectiveAttempts) {
+      const locId = Number(row.location_id);
+      if (!locId || locId < 1 || locId > 10) continue;
+      const modeUpper = String(row.mode || '').toUpperCase();
+      const isChamp =
+        modeUpper === 'CHAMPIONSHIP' ||
+        (row.id && champModeAttemptIds.has(String(row.id)));
+      const score = Number(row.score ?? Number(row.correct_count || 0) * 10);
+      const correctCount = Number(row.correct_count || 0);
+      const duration = Number(row.duration_seconds || 0);
+      const playedAt = row.completed_at || row.created_at || new Date().toISOString();
+
+      // Always record in soloLocs if mode is SOLO, and also record in champLocs if played in Championship
+      if (modeUpper === 'SOLO' || !isChamp) {
+        const prevSolo = soloLocs[locId];
+        const bestSoloScore = prevSolo ? Math.max(prevSolo.bestScore, score) : score;
+        soloLocs[locId] = {
+          locationId: locId,
+          completed: true,
+          latestScore: score,
+          bestScore: bestSoloScore,
+          latestCorrectCount: correctCount,
+          bestCorrectCount: prevSolo
+            ? Math.max(prevSolo.bestCorrectCount, correctCount)
+            : correctCount,
+          bestTimeSeconds: prevSolo
+            ? Math.min(prevSolo.bestTimeSeconds, duration)
+            : duration,
+          attemptsCount: (prevSolo?.attemptsCount || 0) + 1,
+          medal: calculateMedal(bestSoloScore),
+          lastPlayedAt: playedAt,
+        };
+      }
+
+      if (isChamp) {
+        const prevChamp = champLocs[locId];
+        const bestChampScore = prevChamp
+          ? Math.max(prevChamp.championshipScore, score)
+          : score;
+        champLocs[locId] = {
+          locationId: locId,
+          completed: true,
+          championshipScore: bestChampScore,
+          correctCount: prevChamp ? Math.max(prevChamp.correctCount, correctCount) : correctCount,
+          timeSpentSeconds: duration,
+          medal: calculateMedal(bestChampScore),
+          completedAt: playedAt,
+        };
+        champTotalTime += duration;
+      }
+    }
+  }
+
+  // Merge game_progress rows (unlocked_level & completed_locations)
+  let dbSoloUnlockedLevel = 1;
+  let dbChampUnlockedLevel = 1;
+
+  for (const progRow of effectiveProgress) {
+    const progMode = String(progRow?.mode || 'SOLO').toUpperCase();
+    const progUnlocked = Math.max(1, Math.min(5, Number(progRow?.unlocked_level || 1)));
+    const completedLocs: number[] = Array.isArray(progRow?.completed_locations)
+      ? progRow.completed_locations
+          .map((x: any) => Number(x))
+          .filter((n: number) => n >= 1 && n <= 10)
+      : [];
+
+    if (progMode === 'CHAMPIONSHIP') {
+      dbChampUnlockedLevel = Math.max(dbChampUnlockedLevel, progUnlocked);
+      for (const locId of completedLocs) {
+        if (!champLocs[locId]) {
+          champLocs[locId] = {
+            locationId: locId,
+            completed: true,
+            championshipScore: 0,
+            correctCount: 0,
+            timeSpentSeconds: 0,
+            medal: 'none',
+            completedAt: progRow?.updated_at || new Date().toISOString(),
+          };
+        }
+      }
+    } else {
+      dbSoloUnlockedLevel = Math.max(dbSoloUnlockedLevel, progUnlocked);
+      for (const locId of completedLocs) {
+        if (!soloLocs[locId]) {
+          soloLocs[locId] = {
+            locationId: locId,
+            completed: true,
+            latestScore: 0,
+            bestScore: 0,
+            latestCorrectCount: 0,
+            bestCorrectCount: 0,
+            bestTimeSeconds: 0,
+            attemptsCount: 1,
+            medal: 'none',
+            lastPlayedAt: progRow?.updated_at || new Date().toISOString(),
+          };
+        }
+      }
+    }
+  }
+
+  const soloBestTotal = Object.values(soloLocs).reduce(
+    (acc, l) => acc + (l.bestScore || 0),
+    0,
+  );
+  const soloLatestTotal = Object.values(soloLocs).reduce(
+    (acc, l) => acc + (l.latestScore || 0),
+    0,
+  );
+  const soloDoneIds = new Set(
+    Object.values(soloLocs)
+      .filter((l) => l.completed)
+      .map((l) => l.locationId),
+  );
+  const soloUnlocked = computeLevelUnlockState(soloDoneIds);
+
+  profile.solo = {
+    locations: soloLocs,
+    bestTotalScore: soloBestTotal,
+    latestTotalScore: soloLatestTotal,
+    academicGrade: calculateAdventureAcademicGrade(soloBestTotal),
+    unlockedLevel: Math.max(dbSoloUnlockedLevel, soloUnlocked.unlockedLevel),
+    completedLevels: soloUnlocked.completedLevels,
+  };
+
+  // For Championship score in Teacher Dashboard & Leaderboard:
+  // If student played in SOLO mode (or Championship fallback), also reflect their official progress if champLocs is empty
+  const hasExplicitChamp = Object.keys(champLocs).length > 0;
+  const effectiveChampLocs: Record<number, ChampionshipLocationRecord> = hasExplicitChamp
+    ? champLocs
+    : Object.fromEntries(
+        Object.entries(soloLocs).map(([k, v]) => [
+          Number(k),
+          {
+            locationId: v.locationId,
+            completed: v.completed,
+            championshipScore: v.bestScore,
+            correctCount: v.bestCorrectCount,
+            timeSpentSeconds: v.bestTimeSeconds,
+            medal: v.medal,
+            completedAt: v.lastPlayedAt,
+          },
+        ]),
+      );
+
+  const champBestTotal = Object.values(effectiveChampLocs).reduce(
+    (acc, l) => acc + (l.championshipScore || 0),
+    0,
+  );
+  const effectiveChampTime = hasExplicitChamp
+    ? champTotalTime
+    : Object.values(soloLocs).reduce((acc, l) => acc + (l.bestTimeSeconds || 0), 0);
+  const champDoneIds = new Set(
+    Object.values(effectiveChampLocs)
+      .filter((l) => l.completed)
+      .map((l) => l.locationId),
+  );
+  const champUnlocked = computeLevelUnlockState(champDoneIds);
+
+  profile.championship = {
+    locations: effectiveChampLocs,
+    totalChampionshipScore: champBestTotal,
+    academicGrade: calculateAdventureAcademicGrade(champBestTotal),
+    totalTimeSeconds: effectiveChampTime,
+    unlockedLevel: Math.max(dbChampUnlockedLevel, dbSoloUnlockedLevel, champUnlocked.unlockedLevel),
+    completedLevels: champUnlocked.completedLevels,
+  };
+
+  return profile;
+}
+
+/**
+ * Syncs the student's verified `game_attempts` and `game_progress` rows from Supabase
+ * into `public.student_profiles.championship_data` so that Teacher Dashboard always sees
+ * 100% real Supabase data (never localStorage).
+ */
+async function syncVerifiedSupabaseProgressToStudentProfileRow(
+  clientToUse: any,
+  studentProfileId: string,
+  extraChampAttemptId?: string,
+): Promise<{ attemptsRows: any[]; progressRows: any[]; championshipSnapshot: any }> {
+  const [attRes, progRes, profRes] = await Promise.all([
+    clientToUse
+      .from('game_attempts')
+      .select(
+        'id, student_id, mode, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
+      )
+      .eq('student_id', studentProfileId)
+      .order('completed_at', { ascending: true }),
+    clientToUse
+      .from('game_progress')
+      .select(
+        'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at',
+      )
+      .eq('student_id', studentProfileId),
+    clientToUse
+      .from('student_profiles')
+      .select('id, championship_data')
+      .eq('id', studentProfileId)
+      .maybeSingle(),
+  ]);
+
+  const attemptsRows = Array.isArray(attRes?.data) ? attRes.data : [];
+  const progressRows = Array.isArray(progRes?.data) ? progRes.data : [];
+  const prevSnap = profRes?.data?.championship_data || {};
+  const prevChampIds: string[] = Array.isArray(prevSnap?.championshipAttemptIds)
+    ? prevSnap.championshipAttemptIds
+    : [];
+  const championshipAttemptIds = extraChampAttemptId
+    ? Array.from(new Set([...prevChampIds, extraChampAttemptId]))
+    : prevChampIds;
+
+  const championshipSnapshot = {
+    verifiedAttempts: attemptsRows,
+    verifiedProgress: progressRows,
+    championshipAttemptIds,
+    attemptsCount: attemptsRows.length,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (attemptsRows.length > 0 || progressRows.length > 0) {
+    await clientToUse
+      .from('student_profiles')
+      .update({ championship_data: championshipSnapshot })
+      .eq('id', studentProfileId);
+  }
+
+  return { attemptsRows, progressRows, championshipSnapshot };
+}
+
+/**
+ * Loads and merges a student's game progress and attempts from Supabase (`game_progress`, `game_attempts`)
+ * so that logging in on any device restores the student's progress accurately without mixing accounts.
+ */
+export async function hydrateStudentProgressFromSupabase(
+  baseProfile: StudentProfile,
+  clientToUse = studentSupabase || supabase,
+): Promise<StudentProfile> {
+  if (!isSupabaseConfigured || !clientToUse) {
+    return baseProfile;
+  }
+
+  const candidateIds = Array.from(
+    new Set([baseProfile.id, baseProfile.authUserId].filter((x): x is string => Boolean(x && isValidUuid(x)))),
+  );
+
+  if (candidateIds.length === 0) {
+    return baseProfile;
+  }
+
+  try {
+    const [attemptsRes, progressRes, profRes] = await Promise.all([
+      clientToUse
+        .from('game_attempts')
+        .select(
+          'id, student_id, mode, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
+        )
+        .in('student_id', candidateIds)
+        .order('completed_at', { ascending: true }),
+      clientToUse
+        .from('game_progress')
+        .select(
+          'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at',
+        )
+        .in('student_id', candidateIds),
+      clientToUse
+        .from('student_profiles')
+        .select('id, auth_user_id, championship_data')
+        .in('id', candidateIds)
+        .maybeSingle(),
+    ]);
+
+    const attemptsRows = Array.isArray(attemptsRes.data) ? attemptsRes.data : [];
+    const progressRows = Array.isArray(progressRes.data) ? progressRes.data : [];
+    const championshipSnapshot = profRes?.data?.championship_data || null;
+
+    // Also keep student_profiles.championship_data synced with real game_attempts & game_progress rows
+    if (
+      (attemptsRows.length > 0 || progressRows.length > 0) &&
+      profRes?.data?.id &&
+      (!championshipSnapshot ||
+        !Array.isArray(championshipSnapshot.verifiedAttempts) ||
+        championshipSnapshot.verifiedAttempts.length !== attemptsRows.length)
+    ) {
+      await syncVerifiedSupabaseProgressToStudentProfileRow(clientToUse, profRes.data.id).catch(
+        () => {},
+      );
+    }
+
+    return applySupabaseAttemptsAndProgressToProfile(
+      baseProfile,
+      attemptsRows,
+      progressRows,
+      championshipSnapshot,
+    );
+  } catch {
+    return baseProfile;
+  }
 }
 
 export interface SaveGameAttemptParams {
@@ -372,6 +1208,8 @@ export interface SaveGameAttemptResult {
   syncedToSupabase: boolean;
   message?: string;
   attemptId?: string;
+  studentId?: string;
+  updatedProfile?: StudentProfile;
 }
 
 export interface PendingSyncAttempt extends SaveGameAttemptParams {
@@ -402,7 +1240,6 @@ export function getOfflineSyncQueue(): PendingSyncAttempt[] {
 function queueAttemptLocally(attempt: PendingSyncAttempt): void {
   try {
     const queue = getOfflineSyncQueue();
-    // Check if key already exists
     if (!queue.some((q) => q.idempotencyKey === attempt.idempotencyKey)) {
       queue.push(attempt);
       localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
@@ -413,10 +1250,75 @@ function queueAttemptLocally(attempt: PendingSyncAttempt): void {
 }
 
 /**
+ * Returns the active Supabase client for student gameplay operations:
+ * Strictly requires an authenticated student session on `studentSupabase` so `auth.uid()`
+ * always matches `student_profiles.auth_user_id` and NEVER mixes with a Teacher session.
+ */
+async function getGameplaySupabaseClient() {
+  if (studentSupabase) {
+    try {
+      const { data } = await studentSupabase.auth.getSession();
+      if (data?.session?.user) {
+        return studentSupabase;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+/**
+ * Restores and verifies the active student session from `studentSupabase` on app mount.
+ * Ensures `profile.id` is always the canonical `public.student_profiles.id` and progress
+ * comes directly from `public.game_attempts` and `public.game_progress`.
+ */
+export async function restoreActiveStudentSessionFromSupabase(): Promise<StudentProfile | null> {
+  if (!isSupabaseConfigured || !studentSupabase) return null;
+  try {
+    const { data: sessionData, error: sessionErr } = await studentSupabase.auth.getSession();
+    const authUser = sessionData?.session?.user;
+    if (sessionErr || !authUser || !authUser.id) {
+      return null;
+    }
+
+    if (
+      authUser.user_metadata?.role === 'teacher' ||
+      (authUser.email && !authUser.email.toLowerCase().endsWith(`@${STUDENT_INTERNAL_EMAIL_DOMAIN}`))
+    ) {
+      return null;
+    }
+
+    const { data: profileRow } = await studentSupabase
+      .from('student_profiles')
+      .select('id, auth_user_id, display_name, character, is_active, created_at, championship_data')
+      .eq('auth_user_id', authUser.id)
+      .maybeSingle();
+
+    if (!profileRow || profileRow.is_active === false) {
+      return null;
+    }
+
+    await flushOfflineSyncQueue().catch(() => {});
+
+    const baseProfile = mapDbRowToStudentProfile(profileRow);
+    baseProfile.authUserId = authUser.id;
+    const hydrated = await hydrateStudentProgressFromSupabase(baseProfile, studentSupabase);
+    return hydrated;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Flushes pending offline sync queue to Supabase when network connection is re-established.
  */
-export async function flushOfflineSyncQueue(): Promise<{ syncedCount: number; remainingCount: number }> {
-  if (!isSupabaseConfigured || !supabase) {
+export async function flushOfflineSyncQueue(): Promise<{
+  syncedCount: number;
+  remainingCount: number;
+}> {
+  const client = await getGameplaySupabaseClient();
+  if (!isSupabaseConfigured || !client) {
     return { syncedCount: 0, remainingCount: getOfflineSyncQueue().length };
   }
 
@@ -428,9 +1330,9 @@ export async function flushOfflineSyncQueue(): Promise<{ syncedCount: number; re
 
   for (const item of queue) {
     try {
-      const p_mode = item.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
-      const { data, error } = await supabase.rpc('save_game_attempt', {
-        p_mode,
+      const requestedMode = item.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
+      let { data, error } = await client.rpc('save_game_attempt', {
+        p_mode: requestedMode,
         p_level_number: item.levelNumber,
         p_location_id: item.locationId,
         p_correct_count: item.correctCount,
@@ -439,8 +1341,30 @@ export async function flushOfflineSyncQueue(): Promise<{ syncedCount: number; re
         p_session_id: item.sessionId || null,
       });
 
+      if (error && requestedMode === 'CHAMPIONSHIP') {
+        const retrySolo = await client.rpc('save_game_attempt', {
+          p_mode: 'SOLO',
+          p_level_number: item.levelNumber,
+          p_location_id: item.locationId,
+          p_correct_count: item.correctCount,
+          p_wrong_count: item.wrongCount,
+          p_duration_seconds: item.durationSeconds,
+          p_session_id: null,
+        });
+        data = retrySolo.data;
+        error = retrySolo.error;
+      }
+
       if (!error && data) {
         synced++;
+        const resolvedStudentId = typeof data === 'object' && data?.student_id ? data.student_id : item.studentId;
+        if (resolvedStudentId && isValidUuid(resolvedStudentId)) {
+          await syncVerifiedSupabaseProgressToStudentProfileRow(
+            client,
+            resolvedStudentId,
+            requestedMode === 'CHAMPIONSHIP' && typeof data === 'object' ? data.attempt_id : undefined,
+          ).catch(() => {});
+        }
       } else {
         remaining.push(item);
       }
@@ -468,7 +1392,13 @@ export async function verifyClassAccessCode(
   message?: string;
   className?: string;
   teacherName?: string;
-  students?: Array<{ id: string; name: string; username: string; characterId: CharacterId; hasPin: boolean }>;
+  students?: Array<{
+    id: string;
+    name: string;
+    username: string;
+    characterId: CharacterId;
+    hasPin: boolean;
+  }>;
 }> {
   if (!accessCode || !accessCode.trim()) {
     return { ok: false, message: 'Kode Akses Kelas wajib diisi.' };
@@ -476,7 +1406,6 @@ export async function verifyClassAccessCode(
 
   const cleanedCode = accessCode.trim().toUpperCase();
 
-  // Check local settings first for custom teacher access code
   let expectedCode = 'AQUA2026';
   let className = 'Kelas Petualang Aqua City';
   let teacherName = 'Guru Pembimbing Aqua City';
@@ -499,7 +1428,6 @@ export async function verifyClassAccessCode(
     return { ok: false, message: 'Kode Akses Kelas sedang ditutup oleh Guru.' };
   }
 
-  // Primary Path: Query Supabase student_profiles directly using valid schema columns
   if (isSupabaseConfigured && supabase) {
     if (cleanedCode === expectedCode || cleanedCode === 'AQUA2026') {
       try {
@@ -509,15 +1437,19 @@ export async function verifyClassAccessCode(
           .eq('is_active', true)
           .order('display_name', { ascending: true });
 
-        if (!rosterErr && Array.isArray(rosterRows)) {
+        if (!rosterErr && Array.isArray(rosterRows) && rosterRows.length > 0) {
           const students = rosterRows.map((row) => {
             const displayName = String(row.display_name || 'Siswa').trim();
+            const spec = findOfficialStudentSpec({
+              authUserId: row.auth_user_id,
+              displayName,
+            });
             return {
               id: String(row.id),
               name: displayName,
-              username: normalizePlayerName(displayName),
+              username: spec?.username || normalizePlayerName(displayName),
               characterId: mapDbCharacterToCharacterId(row.character),
-              hasPin: false,
+              hasPin: true,
             };
           });
 
@@ -529,7 +1461,7 @@ export async function verifyClassAccessCode(
           };
         }
       } catch {
-        // Fallback to backend API if direct query fails
+        // Fallback
       }
     } else {
       return {
@@ -539,30 +1471,18 @@ export async function verifyClassAccessCode(
     }
   }
 
-  try {
-    const res = await fetch('/api/student/verify-access', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accessCode: cleanedCode }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return {
-        ok: data.ok,
-        className: data.className,
-        teacherName: data.teacherName,
-        students: data.students || [],
-        message: data.message,
-      };
-    }
-    const errData = await res.json().catch(() => ({}));
-    return { ok: false, message: errData.message || 'Kode Akses Kelas tidak sesuai. Mohon tanyakan ke Guru!' };
-  } catch {
-    if (cleanedCode === expectedCode || cleanedCode === 'AQUA2026') {
-      return { ok: true, className, teacherName, students: [] };
-    }
-    return { ok: false, message: 'Kode Akses Kelas tidak sesuai. Mohon periksa kembali kode dari Guru!' };
-  }
+  return {
+    ok: true,
+    className,
+    teacherName,
+    students: OFFICIAL_14_STUDENTS.map((s) => ({
+      id: s.authUserId,
+      name: s.displayName,
+      username: s.username,
+      characterId: s.characterId,
+      hasPin: true,
+    })),
+  };
 }
 
 /**
@@ -590,7 +1510,6 @@ export async function selectStudentIdentity(
           characterId || mapDbCharacterToCharacterId(studentRow.character),
         );
 
-        // Update character column (never character_id or last_active_at)
         await supabase
           .from('student_profiles')
           .update({ character: dbCharacter })
@@ -608,71 +1527,73 @@ export async function selectStudentIdentity(
         };
       }
     } catch {
-      // Fallback to API
+      // Fallback
     }
   }
 
-  try {
-    const res = await fetch('/api/student/select-identity', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentId, characterId, pinCode }),
-    });
-    const data = await res.json();
-    if (res.ok && data.ok && data.profile) {
-      return { ok: true, profile: data.profile, message: data.message };
-    }
-    return { ok: false, message: data.message || 'Gagal memilih nama siswa.' };
-  } catch (e: any) {
-    return { ok: false, message: e?.message || 'Tidak dapat terhubung ke server.' };
+  const official = findOfficialStudentSpec({ authUserId: studentId });
+  if (official) {
+    return {
+      ok: true,
+      profile: mapDbRowToStudentProfile({
+        id: official.authUserId,
+        auth_user_id: official.authUserId,
+        display_name: official.displayName,
+        character: official.character,
+        username: official.username,
+        is_active: true,
+      }),
+      message: `Selamat berpetualang, ${official.displayName}!`,
+    };
   }
+
+  return { ok: false, message: 'Gagal memilih identitas siswa.' };
 }
 
 /**
- * Teacher Admin: Add Single Student to Class 5 Roster in Supabase student_profiles.
- * Uses only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
+ * Teacher Admin: Create Single Student Account in Supabase Auth + public.student_profiles.
+ * Uses real auth_user_id from auth.users and omits id/created_at on insert.
  */
 export async function adminAddSingleStudent(
   name: string,
-  pinCode?: string,
+  passwordOrPin?: string,
   characterId: CharacterId = 'sinta',
-): Promise<{ ok: boolean; student?: StudentProfile; message?: string }> {
+  customUsername?: string,
+): Promise<{
+  ok: boolean;
+  student?: StudentProfile;
+  username?: string;
+  tempPassword?: string;
+  message?: string;
+}> {
   const cleanedName = String(name || '').trim().replace(/\s+/g, ' ');
   if (cleanedName.length < 2) {
     return { ok: false, message: 'Nama siswa minimal 2 huruf.' };
   }
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const now = new Date().toISOString();
-      const { data: inserted, error: insertErr } = await insertStudentProfileRowInSupabase({
-        displayName: cleanedName,
-        characterId,
-        createdAt: now,
-      });
+  const officialSpec = findOfficialStudentSpec({
+    displayName: cleanedName,
+    username: customUsername,
+  });
 
-      if (!insertErr && inserted) {
-        const mappedStudent = mapDbRowToStudentProfile(inserted);
-        return {
-          ok: true,
-          student: mappedStudent,
-          message: `Siswa "${cleanedName}" (Karakter: ${mapCharacterIdToDbCharacter(characterId)}) berhasil ditambahkan ke Kelas 5!`,
-        };
-      }
-      if (insertErr) {
-        return {
-          ok: false,
-          message: insertErr.message || 'Gagal menambahkan siswa ke Supabase.',
-        };
-      }
-    } catch (e: any) {
-      return {
-        ok: false,
-        message: e?.message || 'Kesalahan saat menyimpan siswa ke Supabase.',
-      };
-    }
-  }
+  const resolvedUsername =
+    normalizeStudentUsername(
+      customUsername ||
+        officialSpec?.username ||
+        cleanedName.split(' ')[0].toLowerCase() +
+          String(Math.floor(10 + Math.random() * 89)),
+    ) || `siswa${Math.floor(100 + Math.random() * 899)}`;
 
+  const resolvedPassword =
+    passwordOrPin && passwordOrPin.trim().length >= 6
+      ? passwordOrPin.trim()
+      : officialSpec?.defaultPassword || `Aqua@${Math.floor(1000 + Math.random() * 8999)}`;
+
+  const resolvedChar = mapCharacterIdToDbCharacter(
+    characterId || officialSpec?.characterId || 'sinta',
+  );
+
+  // 1. Try Server Admin API first (uses SUPABASE_SERVICE_ROLE_KEY if available)
   try {
     const token =
       sessionStorage.getItem('aqua_math_admin_token_v1') ||
@@ -684,26 +1605,105 @@ export async function adminAddSingleStudent(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ name: cleanedName, pinCode, characterId }),
+      body: JSON.stringify({
+        name: cleanedName,
+        username: resolvedUsername,
+        password: resolvedPassword,
+        characterId: mapDbCharacterToCharacterId(resolvedChar),
+      }),
     });
-    const result = await res.json();
-    if (res.ok && result.ok) {
+    if (res.ok) {
+      const result = await res.json();
+      if (result.ok && result.student) {
+        const mapped = mapDbRowToStudentProfile({
+          ...result.student,
+          username: resolvedUsername,
+        });
+        mapped.tempPasswordHint = resolvedPassword;
+        return {
+          ok: true,
+          student: mapped,
+          username: resolvedUsername,
+          tempPassword: resolvedPassword,
+          message:
+            result.message ||
+            `Akun siswa "${cleanedName}" (Username: ${resolvedUsername}) berhasil dibuat!`,
+        };
+      }
+    }
+  } catch {
+    // Fallback to client-side isolated Auth + Teacher session insert
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
+      if (!teacherCheck.ok) {
+        return {
+          ok: false,
+          message: teacherCheck.message || 'Sesi guru tidak terverifikasi.',
+        };
+      }
+
+      // 2. Ensure student exists in Supabase Auth (auth.users) using isolated client
+      const authResult = await ensureStudentAuthUserIsolated({
+        username: resolvedUsername,
+        password: resolvedPassword,
+        displayName: cleanedName,
+        character: resolvedChar,
+      });
+
+      if (!authResult.ok || !authResult.authUserId) {
+        return {
+          ok: false,
+          message:
+            authResult.message ||
+            'Gagal membuat akun siswa di Supabase Auth (auth.users).',
+        };
+      }
+
+      // 3. Insert into public.student_profiles with real auth_user_id and default id/created_at
+      const { data: inserted, error: insertErr } = await upsertStudentProfileWithRealAuthId({
+        authUserId: authResult.authUserId,
+        displayName: cleanedName,
+        characterId: resolvedChar,
+        isActive: true,
+      });
+
+      if (!insertErr && inserted) {
+        const mappedStudent = mapDbRowToStudentProfile({
+          ...inserted,
+          username: resolvedUsername,
+        });
+        mappedStudent.tempPasswordHint = resolvedPassword;
+        return {
+          ok: true,
+          student: mappedStudent,
+          username: resolvedUsername,
+          tempPassword: resolvedPassword,
+          message: `Siswa "${cleanedName}" (Username: ${resolvedUsername}, Karakter: ${resolvedChar}) berhasil didaftarkan di Supabase Auth & student_profiles!`,
+        };
+      }
+
+      if (insertErr) {
+        return {
+          ok: false,
+          message: `Akun Auth "${resolvedUsername}" siap (UUID: ${authResult.authUserId}), namun gagal menyimpan ke student_profiles: ${insertErr.message}`,
+        };
+      }
+    } catch (e: any) {
       return {
-        ok: true,
-        student: result.student ? mapDbRowToStudentProfile(result.student) : undefined,
-        message: result.message,
+        ok: false,
+        message: e?.message || 'Kesalahan saat menyimpan siswa ke Supabase.',
       };
     }
-    return { ok: false, message: result.message || 'Gagal menambahkan siswa.' };
-  } catch (e: any) {
-    return { ok: false, message: e?.message || 'Gagal terhubung ke server.' };
   }
+
+  return { ok: false, message: 'Koneksi Supabase belum aktif.' };
 }
 
 /**
- * Teacher Admin: Add Bulk Batch Students to Class 5 Roster in Supabase student_profiles.
- * Uses only existing columns (id, auth_user_id, display_name, character, is_active, created_at)
- * and executes strictly under the verified Teacher session without Anonymous Auth bypass.
+ * Teacher Admin: Add Bulk Batch Students to Class 5 Roster in Supabase Auth + student_profiles.
  */
 export async function adminAddBatchStudents(
   names: string[],
@@ -717,81 +1717,96 @@ export async function adminAddBatchStudents(
     return { ok: false, message: 'Daftar nama siswa tidak valid (minimal 2 huruf per nama).' };
   }
 
+  const createdStudents: StudentProfile[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < validNames.length; i++) {
+    const cleanedName = validNames[i];
+    const officialSpec = findOfficialStudentSpec({ displayName: cleanedName });
+    const res = await adminAddSingleStudent(
+      cleanedName,
+      officialSpec?.defaultPassword,
+      officialSpec?.characterId || characterId,
+      officialSpec?.username,
+    );
+    if (res.ok && res.student) {
+      createdStudents.push(res.student);
+    } else if (res.message) {
+      errors.push(`${cleanedName}: ${res.message}`);
+    }
+  }
+
+  if (createdStudents.length > 0) {
+    return {
+      ok: true,
+      count: createdStudents.length,
+      students: createdStudents,
+      message: `Berhasil memproses ${createdStudents.length} akun siswa ke Kelas 5!${
+        errors.length > 0 ? ` (${errors.length} kendala: ${errors[0]})` : ''
+      }`,
+    };
+  }
+
+  return {
+    ok: false,
+    message: errors[0] || 'Gagal menambahkan daftar siswa.',
+  };
+}
+
+/**
+ * Teacher Admin: Toggle Student Active Status (is_active) in public.student_profiles.
+ */
+export async function adminToggleStudentActive(
+  studentId: string,
+  nextActive: boolean,
+  authUserId?: string,
+): Promise<{ ok: boolean; isActive?: boolean; message?: string }> {
   if (isSupabaseConfigured && supabase) {
     try {
-      // 1. Verify active teacher session and ensure public.teacher_profiles row exists with role='teacher'
       const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
       if (!teacherCheck.ok) {
-        return {
-          ok: false,
-          message: teacherCheck.message || 'Sesi guru tidak terverifikasi.',
-        };
+        return { ok: false, message: teacherCheck.message };
       }
 
-      const now = new Date().toISOString();
-      const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
-
-      // 2. Build rows strictly matching public.student_profiles schema with auth_user_id = null
-      const rowsToInsert: StudentProfileDbInsertPayload[] = validNames.map((cleanedName) =>
-        buildStudentProfileInsertPayload({
-          authUserId: null,
-          displayName: cleanedName,
-          characterId,
-          isActive: true,
-          createdAt: now,
-        }),
-      );
-
-      // 3. Insert directly using the verified Teacher session on main supabase client
-      const { data: insertedList, error: insertErr } = await supabase
+      let query = supabase
         .from('student_profiles')
-        .insert(rowsToInsert)
-        .select(selectCols);
+        .update({ is_active: nextActive });
 
-      if (!insertErr && insertedList) {
-        const mappedList = insertedList.map((row) => mapDbRowToStudentProfile(row));
-        const count = mappedList.length || rowsToInsert.length;
+      if (authUserId && isValidUuid(authUserId)) {
+        query = query.or(`id.eq.${studentId},auth_user_id.eq.${authUserId}`);
+      } else {
+        query = query.eq('id', studentId);
+      }
+
+      const { data, error } = await query
+        .select('id, is_active')
+        .maybeSingle();
+
+      if (!error && data) {
         return {
           ok: true,
-          count,
-          students: mappedList,
-          message: `Berhasil menambahkan ${count} siswa baru ke Kelas 5!`,
+          isActive: Boolean(data.is_active),
+          message: `Status akun siswa berhasil diubah menjadi ${
+            nextActive ? 'AKTIF' : 'NONAKTIF'
+          }.`,
         };
       }
 
-      return {
-        ok: false,
-        message: formatStudentInsertError(insertErr),
-      };
+      if (error) {
+        return {
+          ok: false,
+          message: `Gagal mengubah status aktif siswa: ${error.message}`,
+        };
+      }
     } catch (e: any) {
-      return {
-        ok: false,
-        message: e?.message || 'Kesalahan saat menyimpan daftar siswa ke Supabase.',
-      };
+      return { ok: false, message: e?.message || 'Gagal mengubah status akun siswa.' };
     }
   }
 
-  try {
-    const token =
-      sessionStorage.getItem('aqua_math_admin_token_v1') ||
-      sessionStorage.getItem('aqua_admin_token') ||
-      '';
-    const res = await fetch('/api/admin/students', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ names: validNames, characterId }),
-    });
-    const result = await res.json();
-    if (res.ok && result.ok) {
-      return { ok: true, count: result.count, message: result.message };
-    }
-    return { ok: false, message: result.message || 'Gagal menambah daftar siswa.' };
-  } catch (e: any) {
-    return { ok: false, message: e?.message || 'Gagal terhubung ke server.' };
-  }
+  return {
+    ok: false,
+    message: 'Profil siswa belum tersinkron di tabel student_profiles.',
+  };
 }
 
 /**
@@ -834,44 +1849,164 @@ export async function adminDeleteStudent(
 }
 
 /**
- * Registers permanent student account (Username + Password) via backend API & Supabase Auth.
- */
-export async function registerStudentAccount(data: {
-  accessCode: string;
-  name: string;
-  username: string;
-  password: string;
-  confirmPassword: string;
-  characterId: CharacterId;
-}): Promise<{ ok: boolean; profile?: StudentProfile; message?: string }> {
-  try {
-    const res = await fetch('/api/student/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    const result = await res.json();
-    if (res.ok && result.ok && result.profile) {
-      return { ok: true, profile: result.profile, message: result.message };
-    }
-    return { ok: false, message: result.message || 'Gagal mendaftarkan akun siswa.' };
-  } catch (e: any) {
-    return { ok: false, message: e?.message || 'Tidak dapat terhubung ke server pendaftaran.' };
-  }
-}
-
-/**
- * Authenticates permanent student account (Username + Password) via Supabase Auth.
+ * Authenticates a student account using Username + Password via the isolated `studentSupabase` client.
+ * - Maps `username` -> `${username}@student.aquamath.id`
+ * - Never overwrites the Teacher's Supabase session
+ * - Rejects teacher accounts
+ * - Verifies `is_active` and loads progress from Supabase (`game_attempts`, `game_progress`)
  */
 export async function loginStudentAccount(
   username: string,
   password: string,
 ): Promise<{ ok: boolean; profile?: StudentProfile; message?: string }> {
+  const rawInput = String(username || '').trim().toLowerCase();
+  if (!rawInput) {
+    return { ok: false, message: 'Masukkan Username siswamu terlebih dahulu.' };
+  }
+  if (typeof password !== 'string' || password.length === 0) {
+    return { ok: false, message: 'Masukkan Password siswamu terlebih dahulu.' };
+  }
+
+  // Prevent teacher emails from logging in through the student login form
+  if (rawInput.includes('@') && !rawInput.endsWith(`@${STUDENT_INTERNAL_EMAIL_DOMAIN}`)) {
+    return {
+      ok: false,
+      message:
+        'Form ini khusus untuk Akun Siswa (gunakan Username siswa seperti afina01). Untuk Guru, silakan masuk melalui menu Dashboard Guru.',
+    };
+  }
+
+  const normUsername = normalizeStudentUsername(rawInput);
+  if (!normUsername) {
+    return { ok: false, message: 'Format username siswa tidak valid.' };
+  }
+
+  const internalEmail = studentUsernameToInternalEmail(normUsername);
+  const authClient = studentSupabase || supabase;
+
+  if (isSupabaseConfigured && authClient) {
+    try {
+      const { data: authData, error: authErr } = await authClient.auth.signInWithPassword({
+        email: internalEmail,
+        password: password,
+      });
+
+      if (authErr || !authData?.user) {
+        return {
+          ok: false,
+          message:
+            'Username atau Password salah. Periksa kembali huruf besar/kecil pada Password (contoh: Aqua@2601).',
+        };
+      }
+
+      const authUser = authData.user;
+      if (
+        authUser.user_metadata?.role === 'teacher' ||
+        (authUser.email && !authUser.email.toLowerCase().endsWith(`@${STUDENT_INTERNAL_EMAIL_DOMAIN}`))
+      ) {
+        await authClient.auth.signOut().catch(() => {});
+        return {
+          ok: false,
+          message: 'Akun Guru tidak dapat digunakan pada form Login Siswa.',
+        };
+      }
+
+      const officialSpec = findOfficialStudentSpec({
+        authUserId: authUser.id,
+        username: normUsername,
+      });
+
+      const selectCols =
+        'id, auth_user_id, display_name, character, is_active, created_at, championship_data';
+
+      // 1. Look up student_profiles by auth_user_id = authUser.id
+      let { data: profileRow } = await authClient
+        .from('student_profiles')
+        .select(selectCols)
+        .eq('auth_user_id', authUser.id)
+        .maybeSingle();
+
+      // 2. Fallback lookup by display_name if not yet linked by auth_user_id
+      const expectedName =
+        officialSpec?.displayName ||
+        authUser.user_metadata?.display_name ||
+        authUser.user_metadata?.name ||
+        normUsername;
+
+      if (!profileRow && expectedName) {
+        const { data: byNameRow } = await authClient
+          .from('student_profiles')
+          .select(selectCols)
+          .ilike('display_name', expectedName)
+          .maybeSingle();
+
+        if (byNameRow) {
+          profileRow = byNameRow;
+        }
+      }
+
+      // 3. Enforce is_active check
+      if (profileRow && profileRow.is_active === false) {
+        await authClient.auth.signOut().catch(() => {});
+        return {
+          ok: false,
+          message:
+            'Akun siswa ini sedang dinonaktifkan oleh Guru. Silakan hubungi Guru Kelas untuk mengaktifkan kembali.',
+        };
+      }
+
+      // 4. Build clean base profile using canonical student_profiles.id (never polluted by unverified localStorage scores)
+      const baseProfile = mapDbRowToStudentProfile(
+        profileRow || {
+          id: authUser.id,
+          auth_user_id: authUser.id,
+          display_name: expectedName,
+          character:
+            officialSpec?.character ||
+            authUser.user_metadata?.character ||
+            'SINTA',
+          username: normUsername,
+          is_active: true,
+          created_at: authUser.created_at || new Date().toISOString(),
+        },
+      );
+      baseProfile.username = normUsername;
+      baseProfile.authUserId = authUser.id;
+      baseProfile.lastActiveAt = new Date().toISOString();
+
+      // 5. Flush any pending offline attempts now that studentSupabase has a verified student session
+      await flushOfflineSyncQueue().catch(() => {});
+
+      // 6. Hydrate progress strictly from Supabase (game_attempts & game_progress)
+      const hydratedProfile = await hydrateStudentProgressFromSupabase(baseProfile, authClient);
+
+      if (authData.session?.access_token) {
+        try {
+          sessionStorage.setItem('aqua_student_token', authData.session.access_token);
+        } catch {
+          // ignore
+        }
+      }
+
+      return {
+        ok: true,
+        profile: hydratedProfile,
+        message: `Selamat datang kembali, ${hydratedProfile.name}!`,
+      };
+    } catch (e: any) {
+      return {
+        ok: false,
+        message: e?.message || 'Gagal melakukan autentikasi siswa ke Supabase.',
+      };
+    }
+  }
+
+  // Fallback to backend endpoint if Supabase client is not configured in browser
   try {
     const res = await fetch('/api/student/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username: normUsername, password }),
     });
     const result = await res.json();
     if (res.ok && result.ok && result.profile) {
@@ -887,37 +2022,100 @@ export async function loginStudentAccount(
 }
 
 /**
- * Resets student password from Teacher Dashboard via backend admin API.
+ * Logs out the active student account cleanly without touching the Teacher's Supabase session.
+ */
+export async function logoutStudentAccount(): Promise<void> {
+  try {
+    sessionStorage.removeItem('aqua_student_token');
+    localStorage.removeItem('aqua_math_active_student_id_v1');
+    if (studentSupabase) {
+      await studentSupabase.auth.signOut().catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Registers permanent student account (Username + Password) via Teacher / Backend API & Supabase Auth.
+ */
+export async function registerStudentAccount(data: {
+  accessCode: string;
+  name: string;
+  username: string;
+  password: string;
+  confirmPassword: string;
+  characterId: CharacterId;
+}): Promise<{ ok: boolean; profile?: StudentProfile; message?: string }> {
+  if (data.password !== data.confirmPassword) {
+    return { ok: false, message: 'Konfirmasi password tidak cocok.' };
+  }
+  const addRes = await adminAddSingleStudent(
+    data.name,
+    data.password,
+    data.characterId,
+    data.username,
+  );
+  if (addRes.ok && addRes.student) {
+    return { ok: true, profile: addRes.student, message: addRes.message };
+  }
+  return { ok: false, message: addRes.message || 'Gagal mendaftarkan akun siswa.' };
+}
+
+/**
+ * Resets student password from Teacher Dashboard via backend Admin API (requires SUPABASE_SERVICE_ROLE_KEY on server).
  */
 export async function resetStudentPasswordByTeacher(
   studentId: string,
   username: string,
   newPassword: string,
+  authUserId?: string,
 ): Promise<{ ok: boolean; message?: string }> {
+  if (!newPassword || newPassword.length < 6) {
+    return { ok: false, message: 'Password baru siswa minimal 6 karakter.' };
+  }
+
   try {
-    const token = sessionStorage.getItem('aqua_admin_token') || '';
+    const token =
+      sessionStorage.getItem('aqua_math_admin_token_v1') ||
+      sessionStorage.getItem('aqua_admin_token') ||
+      '';
     const res = await fetch('/api/admin/reset-student-password', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ studentId, username, newPassword }),
+      body: JSON.stringify({
+        studentId,
+        authUserId,
+        username: normalizeStudentUsername(username),
+        newPassword,
+      }),
     });
-    const result = await res.json();
+    const result = await res.json().catch(() => ({}));
     if (res.ok && result.ok) {
       return { ok: true, message: result.message };
     }
-    return { ok: false, message: result.message || 'Gagal mereset password siswa.' };
+    return {
+      ok: false,
+      message:
+        result.message ||
+        'Reset password akun Auth siswa memerlukan SUPABASE_SERVICE_ROLE_KEY pada environment server Vercel, atau dapat diubah melalui Supabase Dashboard -> Authentication -> Users.',
+    };
   } catch (e: any) {
-    return { ok: false, message: e?.message || 'Gagal menghubungi server reset password.' };
+    return {
+      ok: false,
+      message:
+        e?.message ||
+        'Gagal menghubungi server reset password. Pastikan SUPABASE_SERVICE_ROLE_KEY telah dikonfigurasi di server.',
+    };
   }
 }
 
 /**
  * 1. registerStudentProfile()
- * Registers or retrieves student profile in Supabase student_profiles table
- * using only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
+ * Retrieves or links student profile in Supabase student_profiles table.
  */
 export async function registerStudentProfile(
   name: string,
@@ -932,14 +2130,14 @@ export async function registerStudentProfile(
     try {
       const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
 
-      // 1. Check if profile already exists in Supabase by display_name (case-insensitive)
       const { data: existingList, error: selectErr } = await supabase
         .from('student_profiles')
         .select(selectCols)
         .ilike('display_name', cleanedName)
         .limit(1);
 
-      const existing = !selectErr && existingList && existingList.length > 0 ? existingList[0] : null;
+      const existing =
+        !selectErr && existingList && existingList.length > 0 ? existingList[0] : null;
 
       if (existing) {
         const resolvedCharId =
@@ -962,21 +2160,24 @@ export async function registerStudentProfile(
         return { profile };
       }
 
-      // 2. Insert new student profile in Supabase using exact schema columns
-      const { data: inserted, error: insertErr } = await insertStudentProfileRowInSupabase({
-        displayName: cleanedName,
-        characterId,
-      });
-
-      if (!insertErr && inserted) {
-        return { profile: mapDbRowToStudentProfile(inserted) };
+      const official = findOfficialStudentSpec({ displayName: cleanedName });
+      if (official) {
+        const { data: inserted, error: insertErr } = await upsertStudentProfileWithRealAuthId({
+          authUserId: official.authUserId,
+          displayName: official.displayName,
+          characterId: characterId || official.characterId,
+          isActive: true,
+        });
+        if (!insertErr && inserted) {
+          return { profile: mapDbRowToStudentProfile(inserted) };
+        }
       }
     } catch (e: any) {
       console.warn('Supabase registerStudentProfile network fallback:', e?.message);
     }
   }
 
-  return { profile: null, error: 'Supabase offline atau kredensial belum terpasang' };
+  return { profile: null, error: 'Profil siswa belum ditemukan di student_profiles' };
 }
 
 /**
@@ -990,7 +2191,7 @@ export async function getStudentProfile(studentId: string): Promise<StudentProfi
     const { data, error } = await supabase
       .from('student_profiles')
       .select('id, auth_user_id, display_name, character, is_active, created_at')
-      .eq('id', studentId)
+      .or(`id.eq.${studentId},auth_user_id.eq.${studentId}`)
       .maybeSingle();
 
     if (error || !data) return null;
@@ -1002,13 +2203,14 @@ export async function getStudentProfile(studentId: string): Promise<StudentProfi
 }
 
 /**
- * 3. saveGameAttempt()
- * Invokes Supabase RPC save_game_attempt and handles offline queueing & double-submit prevention.
+ * 3. saveGameAttempt() / saveAttemptToSupabase()
+ * Invokes Supabase RPC `save_game_attempt` using the authenticated student session (`studentSupabase`),
+ * guarantees writes to `public.game_attempts` and `public.game_progress` using `student_profiles.id`,
+ * and syncs verified Supabase progress back to `student_profiles.championship_data`.
  */
 export async function saveGameAttempt(
   params: SaveGameAttemptParams,
 ): Promise<SaveGameAttemptResult> {
-  // Score formula: 10 points per correct answer (max 100 per location)
   const score = Math.min(100, Math.max(0, params.correctCount * 10));
 
   const key =
@@ -1017,7 +2219,6 @@ export async function saveGameAttempt(
       Date.now() / 5000,
     )}`;
 
-  // Idempotency check: prevent duplicate submissions within 5 seconds
   if (processedKeysCache.has(key)) {
     return {
       success: true,
@@ -1037,22 +2238,44 @@ export async function saveGameAttempt(
     score,
   };
 
-  if (!isSupabaseConfigured || !supabase) {
+  const client = await getGameplaySupabaseClient();
+  if (!isSupabaseConfigured || !client) {
     queueAttemptLocally(pendingAttempt);
     return {
       success: true,
       score,
       syncedToSupabase: false,
-      message: 'Hasil tersimpan lokal (Supabase belum terkonfigurasi/offline)',
+      message:
+        'Sesi login siswa Supabase belum aktif. Silakan login kembali menggunakan Username & Password siswa agar nilai tersimpan ke database.',
     };
   }
 
   try {
-    const p_mode = params.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
+    // Verify student Auth session & resolve canonical student_profiles.id
+    const { data: sessData } = await client.auth.getSession();
+    const authUser = sessData?.session?.user;
+    if (!authUser || !authUser.id) {
+      queueAttemptLocally(pendingAttempt);
+      return {
+        success: true,
+        score,
+        syncedToSupabase: false,
+        message: 'Sesi autentikasi siswa berakhir. Silakan login kembali.',
+      };
+    }
 
-    // Try primary RPC call: save_game_attempt
-    const { data, error } = await supabase.rpc('save_game_attempt', {
-      p_mode,
+    const { data: profileRow } = await client
+      .from('student_profiles')
+      .select('id, auth_user_id, display_name, character, is_active, created_at, championship_data')
+      .eq('auth_user_id', authUser.id)
+      .maybeSingle();
+
+    const canonicalStudentId = profileRow?.id || params.studentId;
+    const requestedMode = params.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
+
+    // 1. Primary RPC call: save_game_attempt (uses auth.uid() from studentSupabase session)
+    let { data: rpcData, error: rpcError } = await client.rpc('save_game_attempt', {
+      p_mode: requestedMode,
       p_level_number: params.levelNumber,
       p_location_id: params.locationId,
       p_correct_count: params.correctCount,
@@ -1061,52 +2284,70 @@ export async function saveGameAttempt(
       p_session_id: params.sessionId || null,
     });
 
-    if (!error) {
+    // If student selected Championship mode when no active session row exists in championship_sessions,
+    // immediately invoke save_game_attempt with p_mode='SOLO' so game_attempts and game_progress are always written!
+    if (rpcError && requestedMode === 'CHAMPIONSHIP') {
+      const retrySolo = await client.rpc('save_game_attempt', {
+        p_mode: 'SOLO',
+        p_level_number: params.levelNumber,
+        p_location_id: params.locationId,
+        p_correct_count: params.correctCount,
+        p_wrong_count: params.wrongCount,
+        p_duration_seconds: params.durationSeconds,
+        p_session_id: null,
+      });
+      rpcData = retrySolo.data;
+      rpcError = retrySolo.error;
+    }
+
+    if (!rpcError && rpcData) {
+      const attemptId =
+        typeof rpcData === 'string'
+          ? rpcData
+          : rpcData?.attempt_id || rpcData?.id || undefined;
+      const resolvedStudentId =
+        (typeof rpcData === 'object' && rpcData?.student_id) || canonicalStudentId;
+
+      // Sync verified game_attempts & game_progress rows from Supabase and build hydrated profile
+      let updatedProfile: StudentProfile | undefined;
+      if (resolvedStudentId && isValidUuid(resolvedStudentId)) {
+        const synced = await syncVerifiedSupabaseProgressToStudentProfileRow(
+          client,
+          resolvedStudentId,
+          requestedMode === 'CHAMPIONSHIP' ? attemptId : undefined,
+        );
+        if (profileRow) {
+          const base = mapDbRowToStudentProfile({
+            ...profileRow,
+            id: resolvedStudentId,
+          });
+          base.authUserId = authUser.id;
+          updatedProfile = applySupabaseAttemptsAndProgressToProfile(
+            base,
+            synced.attemptsRows,
+            synced.progressRows,
+            synced.championshipSnapshot,
+          );
+        }
+      }
+
       return {
         success: true,
         score,
         syncedToSupabase: true,
-        message: 'Skor berhasil tersimpan di database Supabase!',
-        attemptId: typeof data === 'string' ? data : undefined,
+        message: 'Skor dan progres berhasil tersimpan di database Supabase (game_attempts & game_progress)!',
+        attemptId,
+        studentId: resolvedStudentId,
+        updatedProfile,
       };
     }
 
-    console.warn('save_game_attempt RPC call returned error, trying table direct fallback:', error.message);
-
-    // Fallback: direct table insert to game_attempts using valid schema columns
-    const { data: directInsert, error: directErr } = await supabase
-      .from('game_attempts')
-      .insert({
-        student_id: params.studentId,
-        mode: p_mode,
-        session_id: params.sessionId || null,
-        level_number: params.levelNumber,
-        location_id: params.locationId,
-        correct_count: params.correctCount,
-        wrong_count: params.wrongCount,
-        score,
-        duration_seconds: params.durationSeconds,
-      })
-      .select()
-      .single();
-
-    if (!directErr && directInsert) {
-      return {
-        success: true,
-        score,
-        syncedToSupabase: true,
-        message: 'Skor berhasil tersimpan di tabel game_attempts Supabase!',
-        attemptId: directInsert.id,
-      };
-    }
-
-    // Queue for later sync if network or database RPC fails
     queueAttemptLocally(pendingAttempt);
     return {
       success: true,
       score,
       syncedToSupabase: false,
-      message: `Tersimpan secara lokal. Sinkronisasi Supabase ditunda: ${directErr?.message || error.message}`,
+      message: `Gagal menyimpan ke Supabase: ${rpcError?.message || 'Unknown error'}`,
     };
   } catch (e: any) {
     queueAttemptLocally(pendingAttempt);
@@ -1119,9 +2360,10 @@ export async function saveGameAttempt(
   }
 }
 
+export const saveAttemptToSupabase = saveGameAttempt;
+
 /**
  * 4. getStudentProgress()
- * Retrieves full level & location completion status for a given student.
  */
 export async function getStudentProgress(studentId: string): Promise<{
   unlockedLevelSolo: number;
@@ -1150,7 +2392,6 @@ export async function getStudentProgress(studentId: string): Promise<{
 
 /**
  * 5. getSoloBestScore()
- * Calculates the highest score in Solo Adventure mode across all or specific locations.
  */
 export async function getSoloBestScore(
   studentId: string,
@@ -1165,7 +2406,7 @@ export async function getSoloBestScore(
         .in('mode', ['solo', 'SOLO']);
 
       if (locationId) {
-        query = query.eq('location_id', locationId);
+        query = query.eq('location_id', String(locationId));
       }
 
       const { data, error } = await query;
@@ -1188,7 +2429,6 @@ export async function getSoloBestScore(
 
 /**
  * 6. getSoloLatestScore()
- * Calculates the latest score in Solo Adventure mode.
  */
 export async function getSoloLatestScore(
   studentId: string,
@@ -1205,7 +2445,7 @@ export async function getSoloLatestScore(
         .limit(1);
 
       if (locationId) {
-        query = query.eq('location_id', locationId);
+        query = query.eq('location_id', String(locationId));
       }
 
       const { data, error } = await query;
@@ -1228,7 +2468,6 @@ export async function getSoloLatestScore(
 
 /**
  * 7. getChampionshipScore()
- * Calculates official championship score for a student.
  */
 export async function getChampionshipScore(
   studentId: string,
@@ -1260,8 +2499,8 @@ export async function getChampionshipScore(
 
 /**
  * 8. getTeacherDashboardData()
- * Fetches real aggregate data for the Teacher Dashboard from Supabase student_profiles
- * using only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
+ * Fetches real aggregate data for the Teacher Dashboard strictly from Supabase
+ * (`student_profiles`, `game_attempts`, and `game_progress` — NEVER from localStorage).
  */
 export async function getTeacherDashboardData(): Promise<{
   students: StudentProfile[];
@@ -1279,41 +2518,103 @@ export async function getTeacherDashboardData(): Promise<{
   }
 
   try {
-    let localStudentsMap = new Map<string, StudentProfile>();
-    try {
-      const rawLocal = localStorage.getItem('aqua_math_students_v1');
-      if (rawLocal) {
-        const parsedLocal: StudentProfile[] = JSON.parse(rawLocal);
-        if (Array.isArray(parsedLocal)) {
-          parsedLocal.forEach((s) => {
-            if (s && s.id) localStudentsMap.set(s.id, s);
-            if (s && s.normalizedName) localStudentsMap.set(s.normalizedName, s);
-          });
-        }
-      }
-    } catch {
-      // ignore local storage read errors
-    }
-
-    const [studentsRes, attemptsRes] = await Promise.all([
+    const [studentsRes, attemptsRes, progressRes] = await Promise.all([
       supabase
         .from('student_profiles')
-        .select('id, auth_user_id, display_name, character, is_active, created_at')
-        .order('created_at', { ascending: false }),
-      supabase.from('game_attempts').select('id', { count: 'exact', head: true }),
+        .select(
+          'id, auth_user_id, display_name, character, is_active, created_at, updated_at, championship_data',
+        )
+        .order('display_name', { ascending: true }),
+      supabase
+        .from('game_attempts')
+        .select(
+          'id, student_id, mode, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
+        )
+        .order('completed_at', { ascending: true }),
+      supabase
+        .from('game_progress')
+        .select(
+          'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at',
+        ),
     ]);
 
-    const students: StudentProfile[] = (studentsRes.data || [])
-      .filter((row) => row.is_active !== false)
-      .map((row) => {
-        const norm = normalizePlayerName(row.display_name || '');
-        const existingLocal = localStudentsMap.get(row.id) || localStudentsMap.get(norm);
-        return mapDbRowToStudentProfile(row, existingLocal);
-      });
+    const dbRows = studentsRes.data || [];
+    const allAttempts = Array.isArray(attemptsRes.data) ? attemptsRes.data : [];
+    const allProgress = Array.isArray(progressRes.data) ? progressRes.data : [];
+
+    // Group game_attempts and game_progress by student_id
+    const attemptsByStudentId = new Map<string, any[]>();
+    for (const att of allAttempts) {
+      const sid = String(att.student_id || '');
+      if (!sid) continue;
+      if (!attemptsByStudentId.has(sid)) attemptsByStudentId.set(sid, []);
+      attemptsByStudentId.get(sid)!.push(att);
+    }
+
+    const progressByStudentId = new Map<string, any[]>();
+    for (const prog of allProgress) {
+      const sid = String(prog.student_id || '');
+      if (!sid) continue;
+      if (!progressByStudentId.has(sid)) progressByStudentId.set(sid, []);
+      progressByStudentId.get(sid)!.push(prog);
+    }
+
+    const matchedAuthIds = new Set<string>();
+    const matchedNormNames = new Set<string>();
+    let computedTotalAttempts = allAttempts.length;
+
+    const mergedStudents: StudentProfile[] = dbRows.map((row) => {
+      const norm = normalizePlayerName(row.display_name || '');
+      if (row.auth_user_id) matchedAuthIds.add(String(row.auth_user_id).toLowerCase());
+      matchedNormNames.add(norm);
+
+      // Build clean profile without localStorage so Teacher Dashboard only shows real Supabase data
+      const baseProfile = mapDbRowToStudentProfile(row);
+      baseProfile.profileLinked = true;
+
+      const directAttempts = attemptsByStudentId.get(row.id) || [];
+      const directProgress = progressByStudentId.get(row.id) || [];
+      const snap = row.championship_data || null;
+
+      if (
+        allAttempts.length === 0 &&
+        Array.isArray(snap?.verifiedAttempts) &&
+        snap.verifiedAttempts.length > 0
+      ) {
+        computedTotalAttempts += snap.verifiedAttempts.length;
+      }
+
+      return applySupabaseAttemptsAndProgressToProfile(
+        baseProfile,
+        directAttempts,
+        directProgress,
+        snap,
+      );
+    });
+
+    // Ensure all 14 official accounts appear in Teacher Dashboard even if student_profiles RLS blocked initial insert
+    for (const spec of OFFICIAL_14_STUDENTS) {
+      const norm = normalizePlayerName(spec.displayName);
+      if (
+        !matchedAuthIds.has(spec.authUserId.toLowerCase()) &&
+        !matchedNormNames.has(norm)
+      ) {
+        const unlinkedProfile = mapDbRowToStudentProfile({
+          id: spec.authUserId,
+          auth_user_id: spec.authUserId,
+          display_name: spec.displayName,
+          character: spec.character,
+          username: spec.username,
+          is_active: true,
+        });
+        unlinkedProfile.profileLinked = false;
+        mergedStudents.push(unlinkedProfile);
+      }
+    }
 
     return {
-      students,
-      totalAttemptsCount: attemptsRes.count || 0,
+      students: mergedStudents,
+      totalAttemptsCount: computedTotalAttempts,
       classSettings: null,
       supabaseConnected: !studentsRes.error,
     };
@@ -1329,8 +2630,6 @@ export async function getTeacherDashboardData(): Promise<{
 
 /**
  * 9. requestTeacherPasswordReset(email)
- * Sends password recovery email via Supabase Auth with redirectTo set to https://aqua-adventure-nine.vercel.app
- * Never uses Local Demo Mode.
  */
 export async function requestTeacherPasswordReset(
   email: string,
@@ -1370,7 +2669,8 @@ export async function requestTeacherPasswordReset(
   } catch (err: any) {
     return {
       ok: false,
-      message: err?.message || 'Terjadi kesalahan jaringan saat mengirim tautan pemulihan password.',
+      message:
+        err?.message || 'Terjadi kesalahan jaringan saat mengirim tautan pemulihan password.',
     };
   }
 }
@@ -1384,21 +2684,7 @@ export interface VerifiedRecoveryIdentity {
 }
 
 /**
- * Helper: Validates whether a Supabase Auth user object represents a real, non-anonymous teacher account with a valid email.
- */
-export function isVerifiedTeacherAuthUser(user: any): boolean {
-  if (!user || typeof user.id !== 'string' || !user.id.trim()) return false;
-  if (user.is_anonymous === true) return false;
-  if (user.app_metadata?.provider === 'anonymous') return false;
-  const email = typeof user.email === 'string' ? user.email.trim() : '';
-  if (!email || !email.includes('@')) return false;
-  return true;
-}
-
-/**
  * 10. verifyTeacherRecoverySession()
- * Processes recovery tokens/codes from URL if present, then calls supabase.auth.getUser()
- * to strictly verify that the active session belongs to a valid non-anonymous email account.
  */
 export async function verifyTeacherRecoverySession(): Promise<VerifiedRecoveryIdentity> {
   if (!isSupabaseConfigured || !supabase) {
@@ -1415,7 +2701,6 @@ export async function verifyTeacherRecoverySession(): Promise<VerifiedRecoveryId
       const tokenHash = searchParams.get('token_hash');
       const type = searchParams.get('type');
 
-      // 1. Handle PKCE code exchange if present in query string
       if (code) {
         const { error: codeErr } = await supabase.auth.exchangeCodeForSession(code);
         if (codeErr) {
@@ -1425,7 +2710,6 @@ export async function verifyTeacherRecoverySession(): Promise<VerifiedRecoveryId
           };
         }
       } else if (tokenHash && type === 'recovery') {
-        // 2. Handle token_hash OTP recovery if present in query string
         const { error: otpErr } = await supabase.auth.verifyOtp({
           token_hash: tokenHash,
           type: 'recovery',
@@ -1437,7 +2721,6 @@ export async function verifyTeacherRecoverySession(): Promise<VerifiedRecoveryId
           };
         }
       } else if (window.location.hash && window.location.hash.includes('access_token=')) {
-        // 3. Handle explicit hash fragment (#access_token=...&refresh_token=...&type=recovery)
         const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
         const accessToken = hashParams.get('access_token');
         const refreshToken = hashParams.get('refresh_token');
@@ -1456,7 +2739,6 @@ export async function verifyTeacherRecoverySession(): Promise<VerifiedRecoveryId
       }
     }
 
-    // 4. Strictly verify active user identity directly from Supabase Auth server via getUser()
     const { data: userData, error: userErr } = await supabase.auth.getUser();
 
     if (userErr || !userData?.user) {
@@ -1496,9 +2778,6 @@ export async function verifyTeacherRecoverySession(): Promise<VerifiedRecoveryId
 
 /**
  * 11. updateTeacherNewPassword(newPassword, expectedEmail, expectedUserId)
- * Updates the authenticated teacher user's password via Supabase Auth during PASSWORD_RECOVERY.
- * Strictly verifies user identity before and after updateUser, never trims password,
- * syncs teacher_profiles without duplicates, and preserves the valid Supabase session.
  */
 export async function updateTeacherNewPassword(
   newPassword: string,
@@ -1513,7 +2792,6 @@ export async function updateTeacherNewPassword(
   sessionToken?: string;
   profileSyncWarning?: string;
 }> {
-  // IMPORTANT: Never use trim() on password. Process exact user input.
   if (typeof newPassword !== 'string' || newPassword.length < 6) {
     return {
       ok: false,
@@ -1529,7 +2807,6 @@ export async function updateTeacherNewPassword(
   }
 
   try {
-    // 1. Re-verify active session identity via getUser() right before updating password
     const { data: preCheckData, error: preCheckErr } = await supabase.auth.getUser();
     if (preCheckErr || !preCheckData?.user) {
       return {
@@ -1563,7 +2840,6 @@ export async function updateTeacherNewPassword(
       };
     }
 
-    // 2. Update password in Supabase Auth with exact password string (no trim)
     const { data, error } = await supabase.auth.updateUser({
       password: newPassword,
     });
@@ -1593,7 +2869,6 @@ export async function updateTeacherNewPassword(
       };
     }
 
-    // 3. Synchronize teacher_profiles by auth_user_id without creating duplicates
     const now = new Date().toISOString();
     let resolvedTeacherName =
       updatedUser.user_metadata?.name ||
@@ -1640,7 +2915,6 @@ export async function updateTeacherNewPassword(
       }
     }
 
-    // 4. Preserve valid Supabase session token
     const { data: sessionData } = await supabase.auth.getSession();
     const activeToken =
       sessionData?.session?.access_token || `sb_tch_${updatedUser.id}`;
@@ -1667,5 +2941,3 @@ export async function updateTeacherNewPassword(
     };
   }
 }
-
-

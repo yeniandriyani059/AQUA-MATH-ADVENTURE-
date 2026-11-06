@@ -132,6 +132,31 @@ export function findStudentByName(name: string, students = loadStudents()): Stud
   return students.find((s) => s.normalizedName === norm);
 }
 
+export function upsertStudentInLocalStorage(profile: StudentProfile): StudentProfile[] {
+  const students = loadStudents();
+  const idx = students.findIndex(
+    (s) =>
+      s.id === profile.id ||
+      (profile.authUserId && s.authUserId === profile.authUserId) ||
+      (profile.username && s.username === profile.username) ||
+      s.normalizedName === profile.normalizedName,
+  );
+  let nextList: StudentProfile[];
+  if (idx >= 0) {
+    nextList = [...students];
+    nextList[idx] = {
+      ...nextList[idx],
+      ...profile,
+      lastActiveAt: new Date().toISOString(),
+    };
+  } else {
+    nextList = [...students, { ...profile, lastActiveAt: new Date().toISOString() }];
+  }
+  saveStudents(nextList);
+  setActiveStudentId(profile.id);
+  return nextList;
+}
+
 export function registerOrUpdateStudent(
   name: string,
   characterId: CharacterId,
@@ -169,7 +194,9 @@ export function recordMissionCompletion(
   summary: MissionResultSummary;
 } {
   const students = loadStudents();
-  const idx = students.findIndex((s) => s.id === studentId);
+  const idx = students.findIndex(
+    (s) => s.id === studentId || (s.authUserId && s.authUserId === studentId),
+  );
   if (idx === -1) {
     throw new Error('Profil siswa tidak ditemukan.');
   }
@@ -184,18 +211,6 @@ export function recordMissionCompletion(
 
   students[idx] = updatedProfile;
   saveStudents(students);
-
-  if (isSupabaseConfigured && supabase && isValidUuid(updatedProfile.id)) {
-    supabase
-      .from('student_profiles')
-      .update({
-        display_name: updatedProfile.name,
-        character: mapCharacterIdToDbCharacter(updatedProfile.characterId),
-        is_active: true,
-      })
-      .eq('id', updatedProfile.id)
-      .then(() => {});
-  }
 
   return {
     updatedStudent: updatedProfile,
@@ -237,6 +252,12 @@ export async function recordMissionCompletionAsync(
     });
     result.summary.syncedToSupabase = saveRes.syncedToSupabase;
     result.summary.syncStatusMessage = saveRes.message;
+
+    if (saveRes.updatedProfile) {
+      const nextStudents = upsertStudentInLocalStorage(saveRes.updatedProfile);
+      result.updatedStudent = saveRes.updatedProfile;
+      result.allStudents = nextStudents;
+    }
   } catch {
     result.summary.syncedToSupabase = false;
     result.summary.syncStatusMessage = 'Tersimpan lokal (Penundaan jaringan)';

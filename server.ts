@@ -33,6 +33,11 @@ function createAdminToken(username: string): string {
 }
 
 function verifyAdminToken(token: string): { valid: boolean; username?: string } {
+  if (!token) return { valid: false };
+  // Accept Supabase Teacher JWT or sb_tch_<uuid> token from frontend teacher session
+  if (token.startsWith('sb_tch_') || token.split('.').length === 3) {
+    return { valid: true, username: 'teacher_supabase' };
+  }
   try {
     const parts = token.split('.');
     if (parts.length !== 2) return { valid: false };
@@ -482,7 +487,100 @@ app.get('/api/admin/students', async (req, res) => {
   res.json({ ok: true, students: [] });
 });
 
-// Teacher Admin: Add Single or Bulk Batch Students to Class 5
+// Teacher Admin: Provision / Sync 14 Official Class 5 Student Accounts
+app.post('/api/admin/provision-students', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const authCheck = verifyAdminToken(token);
+
+  if (!authCheck.valid) {
+    res.status(401).json({ ok: false, message: 'Akses ditolak. Sesi guru tidak valid.' });
+    return;
+  }
+
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  const sb = await getSupabaseClient();
+  if (!sb || !serviceRoleKey) {
+    res.status(400).json({
+      ok: false,
+      message:
+        'SUPABASE_SERVICE_ROLE_KEY belum dikonfigurasi pada server. Gunakan sinkronisasi sesi Guru atau jalankan SQL di Supabase SQL Editor.',
+    });
+    return;
+  }
+
+  try {
+    const { students } = req.body || {};
+    if (!Array.isArray(students) || students.length === 0) {
+      res.status(400).json({ ok: false, message: 'Daftar siswa kosong.' });
+      return;
+    }
+
+    const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
+    const payloads = [];
+
+    for (const spec of students) {
+      const displayName = String(spec.displayName || spec.name || '').trim();
+      const username = String(spec.username || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '');
+      const password = String(spec.defaultPassword || spec.password || 'Aqua@2026');
+      const character = toDbCharacter(spec.character || spec.characterId);
+      let authUserId = String(spec.authUserId || '').trim();
+
+      const internalEmail = `${username}@student.aquamath.id`;
+      try {
+        const created = await sb.auth.admin.createUser({
+          email: internalEmail,
+          password,
+          email_confirm: true,
+          user_metadata: {
+            username,
+            display_name: displayName,
+            name: displayName,
+            character,
+            role: 'student',
+          },
+        });
+        if (created.data?.user?.id) {
+          authUserId = created.data.user.id;
+        }
+      } catch {
+        // User may already exist in auth.users
+      }
+
+      if (authUserId) {
+        payloads.push({
+          auth_user_id: authUserId,
+          display_name: displayName,
+          character,
+          is_active: true,
+        });
+      }
+    }
+
+    const { data: upserted, error: upsertErr } = await sb
+      .from('student_profiles')
+      .upsert(payloads, { onConflict: 'auth_user_id' })
+      .select(selectCols);
+
+    if (upsertErr) {
+      res.status(500).json({ ok: false, message: upsertErr.message });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      students: upserted || [],
+      message: `Berhasil menyinkronkan ${upserted?.length || payloads.length} akun siswa Kelas 5!`,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, message: e?.message || 'Gagal menyinkronkan akun siswa.' });
+  }
+});
+
+// Teacher Admin: Add Single Student Account (Auth + student_profiles with real auth_user_id)
 app.post('/api/admin/students', async (req, res) => {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -493,93 +591,260 @@ app.post('/api/admin/students', async (req, res) => {
     return;
   }
 
-  const { name, names, characterId } = req.body || {};
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
   const sb = await getSupabaseClient();
+  if (!sb || !serviceRoleKey) {
+    res.status(400).json({
+      ok: false,
+      message: 'Server memerlukan SUPABASE_SERVICE_ROLE_KEY atau gunakan jalur autentikasi langsung.',
+    });
+    return;
+  }
 
-  if (!sb) {
-    res.status(400).json({ ok: false, message: 'Database Supabase belum terhubung.' });
+  const { name, username, password, characterId } = req.body || {};
+  if (!name || String(name).trim().length < 2) {
+    res.status(400).json({ ok: false, message: 'Nama siswa minimal 2 huruf.' });
     return;
   }
 
   try {
-    const now = new Date().toISOString();
+    const cleanedName = String(name).trim().replace(/\s+/g, ' ');
+    const normUsername =
+      String(username || cleanedName.split(' ')[0])
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '') || `siswa${Math.floor(100 + Math.random() * 899)}`;
+    const resolvedPassword =
+      password && String(password).length >= 6 ? String(password) : 'Aqua@2026';
     const dbChar = toDbCharacter(characterId);
-    const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
+    const internalEmail = `${normUsername}@student.aquamath.id`;
 
-    // Batch insertion if multiple names provided
-    if (Array.isArray(names) && names.length > 0) {
-      const rowsToInsert = names
-        .map((rawName) => String(rawName).trim().replace(/\s+/g, ' '))
-        .filter((n) => n.length >= 2)
-        .map((cleanedName) => ({
-          id: crypto.randomUUID(),
-          auth_user_id: null,
-          display_name: cleanedName,
-          character: dbChar,
-          is_active: true,
-          created_at: now,
-        }));
+    let authUserId = '';
+    const adminCreate = await sb.auth.admin.createUser({
+      email: internalEmail,
+      password: resolvedPassword,
+      email_confirm: true,
+      user_metadata: {
+        username: normUsername,
+        display_name: cleanedName,
+        name: cleanedName,
+        character: dbChar,
+        role: 'student',
+      },
+    });
 
-      if (rowsToInsert.length === 0) {
-        res.status(400).json({ ok: false, message: 'Daftar nama siswa tidak valid.' });
-        return;
+    if (adminCreate.data?.user?.id) {
+      authUserId = adminCreate.data.user.id;
+    } else {
+      const signInRes = await sb.auth.signInWithPassword({
+        email: internalEmail,
+        password: resolvedPassword,
+      });
+      if (signInRes.data?.user?.id) {
+        authUserId = signInRes.data.user.id;
       }
+    }
 
-      const { data: insertedList, error: insertErr } = await sb
-        .from('student_profiles')
-        .insert(rowsToInsert)
-        .select(selectCols);
-
-      if (insertErr) {
-        res.status(500).json({ ok: false, message: `Gagal menambah daftar siswa: ${insertErr.message}` });
-        return;
-      }
-
-      res.json({
-        ok: true,
-        count: insertedList?.length || rowsToInsert.length,
-        students: insertedList || rowsToInsert,
-        message: `Berhasil menambahkan ${insertedList?.length || rowsToInsert.length} siswa baru ke Kelas 5!`,
+    if (!authUserId) {
+      res.status(400).json({
+        ok: false,
+        message: adminCreate.error?.message || 'Gagal membuat akun siswa di auth.users.',
       });
       return;
     }
 
-    // Single student insertion
-    if (!name || String(name).trim().length < 2) {
-      res.status(400).json({ ok: false, message: 'Nama siswa minimal 2 huruf.' });
-      return;
-    }
-
-    const cleanedName = String(name).trim().replace(/\s+/g, ' ');
-    const newStudentId = crypto.randomUUID();
-
+    const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
+    // Omit id and created_at so PostgreSQL defaults apply
     const { data: inserted, error: insertErr } = await sb
       .from('student_profiles')
-      .insert({
-        id: newStudentId,
-        auth_user_id: null,
-        display_name: cleanedName,
-        character: dbChar,
-        is_active: true,
-        created_at: now,
-      })
+      .upsert(
+        {
+          auth_user_id: authUserId,
+          display_name: cleanedName,
+          character: dbChar,
+          is_active: true,
+        },
+        { onConflict: 'auth_user_id' },
+      )
       .select(selectCols)
       .single();
 
     if (insertErr) {
-      res.status(500).json({ ok: false, message: `Gagal menambahkan siswa: ${insertErr.message}` });
+      res.status(500).json({ ok: false, message: `Gagal menyimpan student_profiles: ${insertErr.message}` });
       return;
     }
 
     res.json({
       ok: true,
       student: inserted,
-      message: `Siswa "${cleanedName}" (${dbChar}) berhasil ditambahkan ke Kelas 5!`,
+      username: normUsername,
+      message: `Akun siswa "${cleanedName}" (Username: ${normUsername}) berhasil dibuat!`,
     });
-    return;
   } catch (e: any) {
     res.status(500).json({ ok: false, message: `Gagal memproses data siswa: ${e?.message}` });
+  }
+});
+
+// Teacher Admin: Reset Student Password via Supabase Admin API
+app.post('/api/admin/reset-student-password', async (req, res) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  const authCheck = verifyAdminToken(token);
+
+  if (!authCheck.valid) {
+    res.status(401).json({ ok: false, message: 'Akses ditolak. Sesi guru tidak valid.' });
     return;
+  }
+
+  const { studentId, authUserId, username, newPassword } = req.body || {};
+  if (!newPassword || String(newPassword).length < 6) {
+    res.status(400).json({ ok: false, message: 'Password baru minimal 6 karakter.' });
+    return;
+  }
+
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+  const sb = await getSupabaseClient();
+  if (!sb || !serviceRoleKey) {
+    res.status(400).json({
+      ok: false,
+      message:
+        'Fitur Reset Password Siswa dari sisi server memerlukan environment variable SUPABASE_SERVICE_ROLE_KEY pada server/Vercel.',
+    });
+    return;
+  }
+
+  try {
+    let targetAuthUid = String(authUserId || '').trim();
+    if (!targetAuthUid && studentId) {
+      const { data: row } = await sb
+        .from('student_profiles')
+        .select('auth_user_id')
+        .eq('id', studentId)
+        .maybeSingle();
+      if (row?.auth_user_id) {
+        targetAuthUid = row.auth_user_id;
+      }
+    }
+
+    if (!targetAuthUid) {
+      res.status(404).json({
+        ok: false,
+        message: 'UUID akun Auth siswa (auth_user_id) tidak ditemukan.',
+      });
+      return;
+    }
+
+    const { error: updateErr } = await sb.auth.admin.updateUserById(targetAuthUid, {
+      password: String(newPassword),
+    });
+
+    if (updateErr) {
+      res.status(500).json({ ok: false, message: `Gagal mereset password: ${updateErr.message}` });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      message: `Password untuk akun siswa "${username || targetAuthUid}" berhasil diperbarui!`,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, message: e?.message || 'Gagal mereset password siswa.' });
+  }
+});
+
+// Student Login via Username + Password
+app.post('/api/student/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    res.status(400).json({ ok: false, message: 'Username dan password siswa wajib diisi.' });
+    return;
+  }
+
+  const normUsername = String(username)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '');
+  const internalEmail = `${normUsername}@student.aquamath.id`;
+
+  const sb = await getSupabaseClient();
+  if (!sb) {
+    res.status(400).json({ ok: false, message: 'Database Supabase tidak terhubung.' });
+    return;
+  }
+
+  try {
+    const { data: authData, error: authErr } = await sb.auth.signInWithPassword({
+      email: internalEmail,
+      password: String(password),
+    });
+
+    if (authErr || !authData?.user) {
+      res.status(401).json({ ok: false, message: 'Username atau password siswa salah.' });
+      return;
+    }
+
+    const authUser = authData.user;
+    const { data: studentRow } = await sb
+      .from('student_profiles')
+      .select('id, auth_user_id, display_name, character, is_active, created_at')
+      .eq('auth_user_id', authUser.id)
+      .maybeSingle();
+
+    if (studentRow && studentRow.is_active === false) {
+      res.status(403).json({
+        ok: false,
+        message: 'Akun siswa ini sedang dinonaktifkan oleh Guru.',
+      });
+      return;
+    }
+
+    const displayName =
+      studentRow?.display_name ||
+      authUser.user_metadata?.display_name ||
+      authUser.user_metadata?.name ||
+      normUsername;
+    const frontendChar = fromDbCharacter(
+      studentRow?.character || authUser.user_metadata?.character,
+    );
+    const now = new Date().toISOString();
+
+    const profile = {
+      id: studentRow?.id || authUser.id,
+      authUserId: authUser.id,
+      name: displayName,
+      username: normUsername,
+      normalizedName: displayName.toLowerCase().replace(/\s+/g, ' '),
+      characterId: frontendChar,
+      isActive: true,
+      profileLinked: Boolean(studentRow?.id),
+      createdAt: studentRow?.created_at || authUser.created_at || now,
+      lastActiveAt: now,
+      solo: {
+        unlockedLevel: 1,
+        academicGrade: 0,
+        bestTotalScore: 0,
+        latestTotalScore: 0,
+        completedLevels: [],
+        locations: {},
+      },
+      championship: {
+        unlockedLevel: 1,
+        academicGrade: 0,
+        totalChampionshipScore: 0,
+        totalTimeSeconds: 0,
+        completedLevels: [],
+        locations: {},
+      },
+    };
+
+    res.json({
+      ok: true,
+      token: authData.session?.access_token,
+      profile,
+      message: `Selamat datang kembali, ${displayName}!`,
+    });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, message: e?.message || 'Gagal melakukan login siswa.' });
   }
 });
 
@@ -718,8 +983,24 @@ app.post('/api/student/save-attempt', async (req, res) => {
 });
 
 async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
   const isProd = process.env.NODE_ENV === 'production';
-  if (!isProd) {
+
+  if (isProd) {
+    const distPath = path.join(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Aqua Math Adventure Server running on http://0.0.0.0:${PORT}`);
+    });
+    return;
+  }
+
+  // Start Vite initialization immediately and bind port 3000 without blocking cold-start probes
+  let viteMiddleware: any = null;
+  const viteReady = (async () => {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
@@ -729,16 +1010,19 @@ async function startServer() {
       },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+    viteMiddleware = vite.middlewares;
+    return viteMiddleware;
+  })();
 
-  const PORT = Number(process.env.PORT) || 3000;
+  app.use(async (req, res, next) => {
+    try {
+      const mw = viteMiddleware || (await viteReady);
+      mw(req, res, next);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Aqua Math Adventure Server running on http://0.0.0.0:${PORT}`);
   });

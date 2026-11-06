@@ -38,8 +38,13 @@ import {
   recordMissionCompletionAsync,
   setActiveGameMode,
   setActiveStudentId,
+  upsertStudentInLocalStorage,
 } from './services/gameStorage';
-import { supabase } from './services/supabaseClient';
+import { isSupabaseConfigured, supabase } from './services/supabaseClient';
+import {
+  logoutStudentAccount,
+  restoreActiveStudentSessionFromSupabase,
+} from './services/supabaseService';
 import {
   ClassSettings,
   GameMode,
@@ -113,6 +118,31 @@ export default function App() {
   const [soundMuted, setSoundMuted] = useState<boolean>(() => soundManager.isMuted());
   const [toastNotice, setToastNotice] = useState<string | null>(null);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(false);
+
+  // Verify active student session on mount so gameplay always uses a real authenticated studentSupabase session
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let active = true;
+
+    restoreActiveStudentSessionFromSupabase().then((verifiedProfile) => {
+      if (!active) return;
+      if (verifiedProfile) {
+        const nextList = upsertStudentInLocalStorage(verifiedProfile);
+        setActiveStudent(verifiedProfile);
+        setStudents(nextList);
+      } else {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('autostart') !== '1') {
+          setActiveStudent(null);
+          setActiveStudentId(null);
+        }
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Listen for Supabase PASSWORD_RECOVERY event and verify recovery tokens/codes
   useEffect(() => {
@@ -594,6 +624,24 @@ export default function App() {
                 </span>
               </button>
 
+              {activeStudent && (
+                <button
+                  type="button"
+                  data-testid="title-logout-student-btn"
+                  onClick={async () => {
+                    soundManager.playClick();
+                    await logoutStudentAccount();
+                    setActiveStudent(null);
+                    setActiveStudentId(null);
+                    setToastNotice('Berhasil keluar dari akun siswa.');
+                  }}
+                  className="flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-3 rounded-2xl bg-rose-600/95 hover:bg-rose-500 text-white font-['Fredoka'] font-bold text-xs sm:text-sm border-2 border-rose-200 shadow-[0_4px_0_#881337,0_8px_16px_rgba(3,43,67,0.4)] hover:translate-y-0.5 active:translate-y-1 transition-all cursor-pointer whitespace-nowrap"
+                >
+                  <LogOut className="w-4 h-4 text-white stroke-[2.5] shrink-0" />
+                  <span>KELUAR AKUN</span>
+                </button>
+              )}
+
               {/* 3. CARA BERMAIN */}
               <button
                 type="button"
@@ -626,6 +674,11 @@ export default function App() {
             setGameMode(chosenMode);
             setActiveGameMode(chosenMode);
             setShellState('playing');
+          }}
+          onLogoutStudent={() => {
+            setActiveStudent(null);
+            setActiveStudentId(null);
+            setToastNotice('Berhasil keluar dari akun siswa.');
           }}
           onCancelToTitle={() => setShellState('title')}
         />
@@ -906,14 +959,17 @@ export default function App() {
                   <button
                     type="button"
                     data-testid="confirm-exit-btn"
-                    onClick={() => {
+                    onClick={async () => {
                       soundManager.playClick();
+                      await logoutStudentAccount();
+                      setActiveStudent(null);
+                      setActiveStudentId(null);
                       setPauseMenuConfirm(null);
                       setShellState('onboarding');
                     }}
                     className="py-2.5 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-['Fredoka'] font-bold text-xs cursor-pointer border border-white"
                   >
-                    Ya, Ganti Profil
+                    Ya, Keluar Akun
                   </button>
                 </div>
               </div>
@@ -973,7 +1029,7 @@ export default function App() {
                   className="w-full py-2 rounded-2xl bg-sky-950/80 hover:bg-rose-950/70 text-slate-300 hover:text-rose-200 font-bold text-xs border border-slate-700 hover:border-rose-500/60 cursor-pointer flex items-center justify-center gap-2 transition-colors"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>KELUAR / GANTI PROFIL</span>
+                  <span>KELUAR AKUN / GANTI SISWA</span>
                 </button>
               </div>
             )}

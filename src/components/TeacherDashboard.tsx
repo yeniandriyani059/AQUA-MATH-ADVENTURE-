@@ -43,11 +43,16 @@ import {
   adminAddBatchStudents,
   adminAddSingleStudent,
   adminDeleteStudent,
+  adminToggleStudentActive,
+  findOfficialStudentSpec,
   flushOfflineSyncQueue,
   getTeacherDashboardData,
   mapCharacterIdToDbCharacter,
+  OFFICIAL_14_STUDENTS,
   requestTeacherPasswordReset,
   resetStudentPasswordByTeacher,
+  studentUsernameToInternalEmail,
+  syncOfficial14StudentAccounts,
   updateTeacherNewPassword,
   verifyTeacherRecoverySession,
 } from '../services/supabaseService';
@@ -145,15 +150,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [resetTargetStudent, setResetTargetStudent] = useState<StudentProfile | null>(null);
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [isResetting, setIsResetting] = useState(false);
+  const [resetModalError, setResetModalError] = useState<string | null>(null);
 
   // Student roster registration state (Tab 6)
   const [addStudentFormMode, setAddStudentFormMode] = useState<'none' | 'single' | 'batch'>('none');
   const [singleStudentNameInput, setSingleStudentNameInput] = useState('');
+  const [singleStudentUsernameInput, setSingleStudentUsernameInput] = useState('');
+  const [singleStudentPasswordInput, setSingleStudentPasswordInput] = useState('');
   const [batchStudentNamesInput, setBatchStudentNamesInput] = useState('');
   const [newStudentCharacter, setNewStudentCharacter] = useState<CharacterId>('sinta');
   const [isAddingStudents, setIsAddingStudents] = useState(false);
+  const [isSyncing14Students, setIsSyncing14Students] = useState(false);
   const [studentFormError, setStudentFormError] = useState<string | null>(null);
   const [deleteConfirmStudentId, setDeleteConfirmStudentId] = useState<string | null>(null);
+  const [showCredentialSheetModal, setShowCredentialSheetModal] = useState(false);
+  const [showRlsSqlModal, setShowRlsSqlModal] = useState(false);
 
   const [participantSearch, setParticipantSearch] = useState('');
   const [participantLevelFilter, setParticipantLevelFilter] = useState<number | 'all'>('all');
@@ -1818,23 +1829,39 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
           )}
 
-          {/* TAB 6: KELOLA ROSTER SISWA KELAS 5 */}
+          {/* TAB 6: AKUN SISWA & RESET PASSWORD */}
           {activeTab === 'accounts' && (
             <div className="space-y-4">
-              <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-bold font-['Fredoka'] text-white flex items-center gap-2">
-                    <Users className="w-5 h-5 text-yellow-300" />
-                    <span>Daftar Roster & Kelola Siswa Kelas 5</span>
-                  </h3>
-                  <p className="text-xs text-cyan-200 mt-0.5">
-                    Guru dapat menambahkan siswa satu per satu, menempelkan daftar banyak siswa, memilih karakter (BIMA / SINTA), dan mengelola daftar siswa Kelas 5.
-                  </p>
+              {/* Top Action Bar */}
+              <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-bold font-['Fredoka'] text-white flex items-center gap-2">
+                      <Users className="w-5 h-5 text-yellow-300" />
+                      <span>Manajemen 14 Akun Siswa Kelas 5 & Reset Password</span>
+                    </h3>
+                    <p className="text-xs text-cyan-200 mt-0.5">
+                      Kelola akun siswa (Username & Password), status aktif (<code>is_active</code>), keterhubungan <code>auth.users</code> ↔ <code>student_profiles</code>, serta unduh/cetak daftar kredensial khusus Guru.
+                    </p>
+                  </div>
+
+                  <div className="relative w-full sm:w-60">
+                    <Search className="w-4 h-4 text-cyan-300 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={participantSearch}
+                      onChange={(e) => setParticipantSearch(e.target.value)}
+                      placeholder="Cari nama atau username..."
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/50 text-white text-xs font-bold focus:outline-none focus:border-yellow-400"
+                    />
+                  </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-cyan-500/20">
+                  {/* 1. Buat Akun Siswa Satuan */}
                   <button
                     type="button"
+                    data-testid="btn-add-single-student"
                     onClick={() => {
                       soundManager.playClick();
                       setStudentFormError(null);
@@ -1847,11 +1874,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     }`}
                   >
                     <UserPlus className="w-4 h-4 stroke-[2.5]" />
-                    <span>+ Tambah 1 Siswa</span>
+                    <span>+ Buat 1 Akun Siswa</span>
                   </button>
 
+                  {/* 2. Buat Akun Siswa Massal (Batch) */}
                   <button
                     type="button"
+                    data-testid="btn-add-batch-student"
                     onClick={() => {
                       soundManager.playClick();
                       setStudentFormError(null);
@@ -1864,23 +1893,93 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     }`}
                   >
                     <Users className="w-4 h-4 stroke-[2.5]" />
-                    <span>+ Tempel Banyak Nama (Batch)</span>
+                    <span>+ Buat Akun Massal (Batch)</span>
                   </button>
 
-                  <div className="relative w-full sm:w-56">
-                    <Search className="w-4 h-4 text-cyan-300 absolute left-3 top-2.5" />
-                    <input
-                      type="text"
-                      value={participantSearch}
-                      onChange={(e) => setParticipantSearch(e.target.value)}
-                      placeholder="Cari siswa..."
-                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/50 text-white text-xs font-bold focus:outline-none focus:border-yellow-400"
-                    />
-                  </div>
+                  {/* 3. Sinkronkan 14 Akun Siswa Kelas 5 */}
+                  <button
+                    type="button"
+                    data-testid="btn-sync-14-students"
+                    disabled={isSyncing14Students}
+                    onClick={async () => {
+                      soundManager.playClick();
+                      setIsSyncing14Students(true);
+                      setStatusBanner(null);
+                      try {
+                        const res = await syncOfficial14StudentAccounts();
+                        setStatusBanner(res.message);
+                        if (res.rlsBlocked) {
+                          setShowRlsSqlModal(true);
+                        }
+                        await loadRealSupabaseData();
+                      } finally {
+                        setIsSyncing14Students(false);
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-sky-950 font-['Fredoka'] font-bold text-xs border border-white cursor-pointer shadow-md disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 stroke-[2.5] ${isSyncing14Students ? 'animate-spin' : ''}`} />
+                    <span>
+                      {isSyncing14Students
+                        ? 'Menyinkronkan...'
+                        : 'Sinkronkan 14 Akun Kelas 5'}
+                    </span>
+                  </button>
+
+                  {/* 4. Unduh / Cetak Kredensial Sementara */}
+                  <button
+                    type="button"
+                    data-testid="btn-open-credentials-sheet"
+                    onClick={() => {
+                      soundManager.playClick();
+                      setShowCredentialSheetModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-800 hover:bg-sky-700 text-yellow-300 font-['Fredoka'] font-bold text-xs border border-yellow-400/60 cursor-pointer shadow-md"
+                  >
+                    <Download className="w-4 h-4 stroke-[2.5]" />
+                    <span>Unduh / Cetak Username & Password</span>
+                  </button>
+
+                  {/* 5. SQL Sinkronisasi & RLS */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playClick();
+                      setShowRlsSqlModal((v) => !v);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-sky-900 hover:bg-sky-800 text-cyan-200 font-bold text-xs border border-cyan-400/40 cursor-pointer"
+                  >
+                    <Database className="w-3.5 h-3.5 text-cyan-300" />
+                    <span>SQL Sinkronisasi & RLS</span>
+                  </button>
                 </div>
               </div>
 
-              {/* INLINE FORM: TAMBAH 1 SISWA ATAU BATCH SISWA */}
+              {/* COLLAPSIBLE SQL HELPER FOR SUPABASE SQL EDITOR */}
+              {showRlsSqlModal && (
+                <div className="bg-sky-950 border-2 border-amber-400/80 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs sm:text-sm font-bold text-amber-300 flex items-center gap-2">
+                      <Database className="w-4 h-4 shrink-0" />
+                      <span>
+                        SQL Sinkronisasi 14 Profil Siswa & Policy RLS (Jalankan di Supabase SQL Editor jika student_profiles terkunci RLS)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowRlsSqlModal(false)}
+                      className="px-2.5 py-1 rounded-lg bg-sky-800 text-cyan-200 text-xs font-bold cursor-pointer"
+                    >
+                      Tutup
+                    </button>
+                  </div>
+                  <pre className="p-3 rounded-xl bg-slate-950 border border-cyan-500/30 text-[11px] font-mono text-cyan-100 overflow-x-auto max-h-60 select-all">
+                    {SUPABASE_SCHEMA_SQL}
+                  </pre>
+                </div>
+              )}
+
+              {/* INLINE FORM: BUAT 1 AKUN SISWA ATAU BATCH AKUN SISWA */}
               {addStudentFormMode !== 'none' && (
                 <div className="bg-sky-950 border-2 border-yellow-400/80 rounded-2xl p-4 sm:p-5 space-y-4 shadow-xl">
                   <div className="flex items-center justify-between border-b border-cyan-500/30 pb-2.5">
@@ -1888,12 +1987,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       {addStudentFormMode === 'single' ? (
                         <>
                           <UserPlus className="w-4 h-4 text-yellow-300" />
-                          <span>Tambah 1 Siswa Kelas 5 Baru</span>
+                          <span>Buat 1 Akun Siswa Baru (Supabase Auth + student_profiles)</span>
                         </>
                       ) : (
                         <>
                           <Users className="w-4 h-4 text-cyan-300" />
-                          <span>Tempel Daftar Banyak Siswa (Batch)</span>
+                          <span>Buat Akun Siswa Massal / Batch</span>
                         </>
                       )}
                     </h4>
@@ -1936,8 +2035,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         try {
                           const res = await adminAddSingleStudent(
                             cleaned,
-                            undefined,
+                            singleStudentPasswordInput.trim() || undefined,
                             newStudentCharacter,
+                            singleStudentUsernameInput.trim() || undefined,
                           );
                           if (res.ok) {
                             if (res.student) {
@@ -1949,17 +2049,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               onUpdateStudents(nextList);
                             }
                             setSingleStudentNameInput('');
+                            setSingleStudentUsernameInput('');
+                            setSingleStudentPasswordInput('');
                             setAddStudentFormMode('none');
                             setStatusBanner(
                               res.message ||
-                                `Siswa "${cleaned}" (${mapCharacterIdToDbCharacter(newStudentCharacter)}) berhasil ditambahkan!`,
+                                `Akun siswa "${cleaned}" berhasil dibuat!`,
                             );
                             await loadRealSupabaseData();
                           } else {
-                            setStudentFormError(res.message || 'Gagal menambahkan siswa.');
+                            setStudentFormError(res.message || 'Gagal membuat akun siswa.');
                           }
                         } catch (err: any) {
-                          setStudentFormError(err?.message || 'Gagal menambahkan siswa.');
+                          setStudentFormError(err?.message || 'Gagal membuat akun siswa.');
                         } finally {
                           setIsAddingStudents(false);
                         }
@@ -1990,7 +2092,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             setBatchStudentNamesInput('');
                             setAddStudentFormMode('none');
                             setStatusBanner(
-                              res.message || `Berhasil menambahkan ${names.length} siswa baru!`,
+                              res.message || `Berhasil membuat ${names.length} akun siswa baru!`,
                             );
                             await loadRealSupabaseData();
                           } else {
@@ -2008,22 +2110,62 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
                         {addStudentFormMode === 'single' ? (
-                          <div>
-                            <label
-                              htmlFor="single-student-name"
-                              className="block text-xs font-bold text-cyan-100 mb-1.5"
-                            >
-                              Nama Lengkap Siswa Kelas 5 (display_name):
-                            </label>
-                            <input
-                              id="single-student-name"
-                              type="text"
-                              required
-                              value={singleStudentNameInput}
-                              onChange={(e) => setSingleStudentNameInput(e.target.value)}
-                              placeholder="Contoh: Ahmad Rizky Pratama"
-                              className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border-2 border-cyan-400/60 text-white text-xs sm:text-sm font-bold focus:outline-none focus:border-yellow-400"
-                            />
+                          <div className="space-y-3">
+                            <div>
+                              <label
+                                htmlFor="single-student-name"
+                                className="block text-xs font-bold text-cyan-100 mb-1"
+                              >
+                                1. Nama Lengkap Siswa (display_name):
+                              </label>
+                              <input
+                                id="single-student-name"
+                                type="text"
+                                required
+                                value={singleStudentNameInput}
+                                onChange={(e) => setSingleStudentNameInput(e.target.value)}
+                                placeholder="Contoh: Afina Felisia Putri"
+                                className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border-2 border-cyan-400/60 text-white text-xs sm:text-sm font-bold focus:outline-none focus:border-yellow-400"
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2.5">
+                              <div>
+                                <label
+                                  htmlFor="single-student-username"
+                                  className="block text-xs font-bold text-cyan-100 mb-1"
+                                >
+                                  2. Username Siswa:
+                                </label>
+                                <input
+                                  id="single-student-username"
+                                  type="text"
+                                  value={singleStudentUsernameInput}
+                                  onChange={(e) =>
+                                    setSingleStudentUsernameInput(
+                                      e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''),
+                                    )
+                                  }
+                                  placeholder="Contoh: afina01"
+                                  className="w-full px-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/60 text-yellow-300 font-mono text-xs font-bold focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label
+                                  htmlFor="single-student-password"
+                                  className="block text-xs font-bold text-cyan-100 mb-1"
+                                >
+                                  3. Password Awal:
+                                </label>
+                                <input
+                                  id="single-student-password"
+                                  type="text"
+                                  value={singleStudentPasswordInput}
+                                  onChange={(e) => setSingleStudentPasswordInput(e.target.value)}
+                                  placeholder="Contoh: Aqua@2601"
+                                  className="w-full px-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/60 text-white font-mono text-xs font-bold focus:outline-none"
+                                />
+                              </div>
+                            </div>
                           </div>
                         ) : (
                           <div>
@@ -2039,7 +2181,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               required
                               value={batchStudentNamesInput}
                               onChange={(e) => setBatchStudentNamesInput(e.target.value)}
-                              placeholder={'Ahmad Rizky\nSiti Aminah\nBudi Santoso'}
+                              placeholder={'Afina Felisia Putri\nAfiz El Haddadi\nARJUNA SURYA WIKRAMA'}
                               className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border-2 border-cyan-400/60 text-white text-xs sm:text-sm font-bold focus:outline-none focus:border-yellow-400"
                             />
                           </div>
@@ -2107,81 +2249,150 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         {isAddingStudents
                           ? 'Menyimpan ke Supabase...'
                           : addStudentFormMode === 'single'
-                            ? 'Simpan Siswa ke Kelas'
-                            : 'Simpan Daftar Siswa'}
+                            ? 'Buat Akun Siswa'
+                            : 'Buat Daftar Akun Siswa'}
                       </button>
                     </div>
                   </form>
                 </div>
               )}
 
-              {students.length === 0 ? (
-                <div className="bg-sky-950 border-2 border-dashed border-cyan-500/40 rounded-3xl p-8 text-center space-y-3">
-                  <Users className="w-12 h-12 text-cyan-400/60 mx-auto" />
-                  <div>
-                    <h4 className="text-base font-bold font-['Fredoka'] text-white">
-                      Belum Ada Siswa Terdaftar di Kelas 5
-                    </h4>
-                    <p className="text-xs text-cyan-200 mt-1 max-w-md mx-auto">
-                      Gunakan tombol <strong>"+ Tambah 1 Siswa"</strong> atau <strong>"+ Tempel Banyak Nama (Batch)"</strong> di atas untuk mendaftarkan nama siswa Kelas 5 milikmu!
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-sky-900/90 text-cyan-200 uppercase font-bold text-[11px] border-b border-cyan-500/30">
-                        <tr>
-                          <th className="py-3 px-4">Nama Siswa</th>
-                          <th className="py-3 px-4">Karakter</th>
-                          <th className="py-3 px-4 text-center">Skor Solo Terbaik</th>
-                          <th className="py-3 px-4 text-center">Skor Championship</th>
-                          <th className="py-3 px-4 text-center">Status Akses</th>
-                          <th className="py-3 px-4 text-center">Kelola & Hapus</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-cyan-500/20 text-cyan-100 font-semibold">
-                        {students
-                          .filter(
-                            (s) =>
-                              !participantSearch ||
-                              s.name.toLowerCase().includes(participantSearch.toLowerCase()) ||
-                              (s.username && s.username.toLowerCase().includes(participantSearch.toLowerCase())),
-                          )
-                          .map((student) => (
+              {/* STUDENT ACCOUNTS TABLE */}
+              <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-sky-900/90 text-cyan-200 uppercase font-bold text-[11px] border-b border-cyan-500/30">
+                      <tr>
+                        <th className="py-3 px-3">No</th>
+                        <th className="py-3 px-4">Nama Siswa</th>
+                        <th className="py-3 px-4">Username Login</th>
+                        <th className="py-3 px-3">Karakter</th>
+                        <th className="py-3 px-4">Keterhubungan Database</th>
+                        <th className="py-3 px-3 text-center">Status Akun (is_active)</th>
+                        <th className="py-3 px-4 text-center">Aksi Guru</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-cyan-500/20 text-cyan-100 font-semibold">
+                      {students
+                        .filter(
+                          (s) =>
+                            !participantSearch ||
+                            s.name.toLowerCase().includes(participantSearch.toLowerCase()) ||
+                            (s.username &&
+                              s.username.toLowerCase().includes(participantSearch.toLowerCase())),
+                        )
+                        .map((student, idx) => {
+                          const spec = findOfficialStudentSpec({
+                            authUserId: student.authUserId || student.id,
+                            username: student.username,
+                            displayName: student.name,
+                          });
+                          const resolvedUsername =
+                            spec?.username || student.username || student.normalizedName;
+                          const resolvedAuthUid =
+                            student.authUserId || spec?.authUserId || student.id;
+                          const isActive = student.isActive !== false;
+                          const isLinked = student.profileLinked !== false;
+
+                          return (
                             <tr key={student.id} className="hover:bg-sky-900/40 transition-colors">
+                              <td className="py-3 px-3 font-mono font-bold text-cyan-300">
+                                {spec?.no || idx + 1}
+                              </td>
                               <td className="py-3 px-4">
                                 <div className="font-bold text-white text-sm">{student.name}</div>
-                                <div className="text-[11px] text-cyan-300 font-mono">
-                                  ID: {student.id}
+                                <div className="text-[10px] text-cyan-300 font-mono">
+                                  Solo: {student.solo?.bestTotalScore || 0} · Champ:{' '}
+                                  {student.championship?.totalChampionshipScore || 0}
                                 </div>
                               </td>
                               <td className="py-3 px-4">
+                                <div className="font-mono font-extrabold text-yellow-300 text-sm">
+                                  {resolvedUsername}
+                                </div>
+                                <div className="text-[10px] font-mono text-cyan-300">
+                                  {studentUsernameToInternalEmail(resolvedUsername)}
+                                </div>
+                              </td>
+                              <td className="py-3 px-3">
                                 <div className="flex items-center gap-2">
                                   <CharacterAvatarSvg
                                     characterId={student.characterId}
-                                    className="w-8 h-8 shrink-0"
+                                    className="w-7 h-7 shrink-0"
                                   />
                                   <span className="font-bold text-white">
-                                    {CHARACTERS.find((c) => c.id === student.characterId)?.name} (
-                                    {mapCharacterIdToDbCharacter(student.characterId)})
+                                    {mapCharacterIdToDbCharacter(student.characterId)}
                                   </span>
                                 </div>
                               </td>
-                              <td className="py-3 px-4 text-center font-mono font-bold text-yellow-300 tabular-nums">
-                                {student.solo?.bestTotalScore || 0} Poin
+                              <td className="py-3 px-4">
+                                <div className="space-y-1">
+                                  {isLinked ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 border border-emerald-400 text-emerald-300">
+                                      <CheckCircle2 className="w-3 h-3" /> Auth & student_profiles Terhubung
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950 border border-amber-400 text-amber-200">
+                                      <AlertTriangle className="w-3 h-3" /> Auth Aktif · Menunggu Sync student_profiles
+                                    </span>
+                                  )}
+                                  <div className="text-[10px] font-mono text-cyan-300 truncate max-w-[210px]">
+                                    auth_user_id: {resolvedAuthUid}
+                                  </div>
+                                </div>
                               </td>
-                              <td className="py-3 px-4 text-center font-mono font-bold text-cyan-300 tabular-nums">
-                                {student.championship?.totalChampionshipScore || 0} Poin
+                              <td className="py-3 px-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    soundManager.playClick();
+                                    const nextState = !isActive;
+                                    const res = await adminToggleStudentActive(
+                                      student.id,
+                                      nextState,
+                                      resolvedAuthUid,
+                                    );
+                                    const updatedList = students.map((s) =>
+                                      s.id === student.id ? { ...s, isActive: nextState } : s,
+                                    );
+                                    saveStudents(updatedList);
+                                    onUpdateStudents(updatedList);
+                                    setStatusBanner(
+                                      res.message ||
+                                        `Status akun ${student.name} diubah menjadi ${
+                                          nextState ? 'AKTIF' : 'NONAKTIF'
+                                        }.`,
+                                    );
+                                  }}
+                                  className={`px-3 py-1 rounded-xl text-[10px] font-extrabold border cursor-pointer transition-colors ${
+                                    isActive
+                                      ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200 hover:bg-emerald-500/30'
+                                      : 'bg-rose-950 border-rose-400 text-rose-200 hover:bg-rose-900'
+                                  }`}
+                                >
+                                  {isActive ? 'AKTIF (Klik Nonaktifkan)' : 'NONAKTIF (Klik Aktifkan)'}
+                                </button>
                               </td>
                               <td className="py-3 px-4 text-center">
-                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-950 border border-emerald-400 text-emerald-300">
-                                  <UserCheck className="w-3 h-3" /> Siap Bermain
-                                </span>
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <div className="flex items-center justify-center gap-1.5">
+                                <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      soundManager.playClick();
+                                      setResetModalError(null);
+                                      setNewPasswordInput(spec?.defaultPassword || '');
+                                      setResetTargetStudent({
+                                        ...student,
+                                        username: resolvedUsername,
+                                        authUserId: resolvedAuthUid,
+                                      });
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-sky-950 text-xs font-bold cursor-pointer flex items-center gap-1"
+                                  >
+                                    <KeyRound className="w-3 h-3" />
+                                    <span>Reset Password</span>
+                                  </button>
+
                                   {deleteConfirmStudentId === student.id ? (
                                     <>
                                       <button
@@ -2231,16 +2442,104 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                 </div>
                               </td>
                             </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
+                          );
+                        })}
+                    </tbody>
+                  </table>
                 </div>
-              )}
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* TEACHER CREDENTIAL SHEET MODAL (DOWNLOAD CSV / PRINT FOR TEACHER ONLY) */}
+      {showCredentialSheetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-sky-950/90 backdrop-blur-xs">
+          <div className="w-full max-w-3xl bg-sky-900 border-4 border-yellow-400 rounded-3xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-500/30 pb-3 shrink-0">
+              <div>
+                <h4 className="font-['Fredoka'] font-bold text-lg text-white flex items-center gap-2">
+                  <KeyRound className="w-5 h-5 text-yellow-300" />
+                  <span>Daftar Kredensial Login 14 Siswa Kelas 5 (Khusus Pegangan Guru)</span>
+                </h4>
+                <p className="text-xs text-cyan-200">
+                  Siswa login hanya menggunakan <strong>Username</strong> dan <strong>Password</strong>. Password tidak pernah disimpan secara plaintext di database.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundManager.playClick();
+                    const header = 'No,Nama Siswa,Username,Password Sementara,Karakter,Email Internal Auth,UUID Auth\n';
+                    const rows = OFFICIAL_14_STUDENTS.map(
+                      (s) =>
+                        `${s.no},"${s.displayName}",${s.username},${s.defaultPassword},${s.character},${studentUsernameToInternalEmail(s.username)},${s.authUserId}`,
+                    ).join('\n');
+                    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'kredensial-14-siswa-aqua-math-adventure.csv';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Unduh CSV</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-3.5 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-['Fredoka'] font-bold text-xs cursor-pointer"
+                >
+                  Cetak Daftar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCredentialSheetModal(false)}
+                  className="px-3 py-2 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-100 text-xs font-bold cursor-pointer"
+                >
+                  Tutup
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto flex-1 bg-sky-950 rounded-2xl border border-cyan-500/40">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-sky-900 text-cyan-200 uppercase font-bold text-[11px] border-b border-cyan-500/30">
+                  <tr>
+                    <th className="py-2.5 px-3">No</th>
+                    <th className="py-2.5 px-3">Nama Siswa</th>
+                    <th className="py-2.5 px-3">Username</th>
+                    <th className="py-2.5 px-3">Password Sementara</th>
+                    <th className="py-2.5 px-3">Karakter</th>
+                    <th className="py-2.5 px-3">UUID Supabase Auth</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-cyan-500/20 text-white">
+                  {OFFICIAL_14_STUDENTS.map((s) => (
+                    <tr key={s.username} className="hover:bg-sky-900/40">
+                      <td className="py-2 px-3 font-mono text-cyan-300">{s.no}</td>
+                      <td className="py-2 px-3 font-bold">{s.displayName}</td>
+                      <td className="py-2 px-3 font-mono font-bold text-yellow-300">{s.username}</td>
+                      <td className="py-2 px-3 font-mono font-bold text-emerald-300">
+                        {s.defaultPassword}
+                      </td>
+                      <td className="py-2 px-3 font-bold text-cyan-200">{s.character}</td>
+                      <td className="py-2 px-3 font-mono text-[10px] text-cyan-300">
+                        {s.authUserId}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TEACHER RESET PASSWORD MODAL */}
       {resetTargetStudent && (
@@ -2253,7 +2552,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setResetTargetStudent(null)}
+                onClick={() => {
+                  setResetTargetStudent(null);
+                  setResetModalError(null);
+                }}
                 className="text-cyan-200 hover:text-white text-xs font-bold cursor-pointer"
               >
                 Batal
@@ -2266,16 +2568,27 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 {resetTargetStudent.name}
               </div>
               <div className="text-xs font-mono text-yellow-300">
-                Username: @{resetTargetStudent.username || resetTargetStudent.normalizedName}
+                Username: {resetTargetStudent.username || resetTargetStudent.normalizedName}
               </div>
             </div>
+
+            {resetModalError && (
+              <div
+                role="alert"
+                className="p-3 rounded-xl bg-rose-950 border border-rose-400 text-rose-100 text-xs font-semibold flex items-center gap-2"
+              >
+                <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0" />
+                <span>{resetModalError}</span>
+              </div>
+            )}
 
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
                 soundManager.playClick();
+                setResetModalError(null);
                 if (!newPasswordInput || newPasswordInput.length < 6) {
-                  alert('Password baru minimal 6 karakter.');
+                  setResetModalError('Password baru minimal 6 karakter.');
                   return;
                 }
                 setIsResetting(true);
@@ -2286,19 +2599,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     resetTargetStudent.id,
                     targetUsername,
                     newPasswordInput,
+                    resetTargetStudent.authUserId || undefined,
                   );
                   if (res.ok) {
                     setStatusBanner(
                       res.message ||
-                        `Password untuk siswa ${resetTargetStudent.name} (@${targetUsername}) telah berhasil di-reset!`,
+                        `Password untuk siswa ${resetTargetStudent.name} (${targetUsername}) telah berhasil di-reset!`,
                     );
                     setResetTargetStudent(null);
                     setNewPasswordInput('');
                   } else {
-                    alert(res.message || 'Gagal reset password.');
+                    setResetModalError(res.message || 'Gagal mereset password siswa.');
                   }
                 } catch (err: any) {
-                  alert(err?.message || 'Gagal mereset password.');
+                  setResetModalError(err?.message || 'Gagal mereset password siswa.');
                 } finally {
                   setIsResetting(false);
                 }
@@ -2326,7 +2640,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setResetTargetStudent(null)}
+                  onClick={() => {
+                    setResetTargetStudent(null);
+                    setResetModalError(null);
+                  }}
                   className="px-4 py-2.5 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-100 text-xs font-bold cursor-pointer"
                 >
                   Batal

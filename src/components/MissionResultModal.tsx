@@ -84,6 +84,24 @@ export const MissionResultModal: React.FC<MissionResultModalProps> = ({
           </div>
 
           {/* Sync & Level Unlocked Banner */}
+          {summary.syncStatusMessage && (
+            <div
+              data-testid="supabase-sync-status"
+              className={`p-2.5 rounded-2xl border text-xs font-bold flex items-center gap-2 ${
+                summary.syncedToSupabase
+                  ? 'bg-emerald-950/80 border-emerald-400 text-emerald-200'
+                  : 'bg-amber-950/80 border-amber-400 text-amber-200'
+              }`}
+            >
+              <CheckCircle2
+                className={`w-4 h-4 shrink-0 ${
+                  summary.syncedToSupabase ? 'text-emerald-400' : 'text-amber-400'
+                }`}
+              />
+              <span>{summary.syncStatusMessage}</span>
+            </div>
+          )}
+
           {summary.unlockedNextLevel && (
             <div className="p-2.5 rounded-2xl bg-emerald-950 border border-emerald-400 text-emerald-200 text-xs font-bold flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />

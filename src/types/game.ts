@@ -108,10 +108,14 @@ export interface ChampionshipLocationRecord {
 
 export interface StudentProfile {
   id: string;
+  authUserId?: string | null;
   name: string;
   username?: string;
   normalizedName: string;
   characterId: CharacterId;
+  isActive?: boolean;
+  profileLinked?: boolean;
+  tempPasswordHint?: string;
   createdAt: string;
   lastActiveAt: string;
   // Strictly isolated Solo Adventure state
