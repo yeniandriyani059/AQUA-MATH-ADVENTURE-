@@ -937,16 +937,146 @@ export async function requestTeacherPasswordReset(
   }
 }
 
+export interface VerifiedRecoveryIdentity {
+  ok: boolean;
+  userId?: string;
+  email?: string;
+  displayName?: string;
+  message?: string;
+}
+
 /**
- * 10. updateTeacherNewPassword(newPassword)
+ * Helper: Validates whether a Supabase Auth user object represents a real, non-anonymous teacher account with a valid email.
+ */
+export function isVerifiedTeacherAuthUser(user: any): boolean {
+  if (!user || typeof user.id !== 'string' || !user.id.trim()) return false;
+  if (user.is_anonymous === true) return false;
+  if (user.app_metadata?.provider === 'anonymous') return false;
+  const email = typeof user.email === 'string' ? user.email.trim() : '';
+  if (!email || !email.includes('@')) return false;
+  return true;
+}
+
+/**
+ * 10. verifyTeacherRecoverySession()
+ * Processes recovery tokens/codes from URL if present, then calls supabase.auth.getUser()
+ * to strictly verify that the active session belongs to a valid non-anonymous email account.
+ */
+export async function verifyTeacherRecoverySession(): Promise<VerifiedRecoveryIdentity> {
+  if (!isSupabaseConfigured || !supabase) {
+    return {
+      ok: false,
+      message: 'Koneksi Supabase belum aktif. Tidak dapat memverifikasi sesi pemulihan password.',
+    };
+  }
+
+  try {
+    if (typeof window !== 'undefined') {
+      const searchParams = new URLSearchParams(window.location.search);
+      const code = searchParams.get('code');
+      const tokenHash = searchParams.get('token_hash');
+      const type = searchParams.get('type');
+
+      // 1. Handle PKCE code exchange if present in query string
+      if (code) {
+        const { error: codeErr } = await supabase.auth.exchangeCodeForSession(code);
+        if (codeErr) {
+          return {
+            ok: false,
+            message: `Tautan pemulihan tidak valid atau sudah kedaluwarsa (${codeErr.message}). Silakan kirim ulang permintaan reset password.`,
+          };
+        }
+      } else if (tokenHash && type === 'recovery') {
+        // 2. Handle token_hash OTP recovery if present in query string
+        const { error: otpErr } = await supabase.auth.verifyOtp({
+          token_hash: tokenHash,
+          type: 'recovery',
+        });
+        if (otpErr) {
+          return {
+            ok: false,
+            message: `Token pemulihan tidak valid atau sudah kedaluwarsa (${otpErr.message}). Silakan kirim ulang permintaan reset password.`,
+          };
+        }
+      } else if (window.location.hash && window.location.hash.includes('access_token=')) {
+        // 3. Handle explicit hash fragment (#access_token=...&refresh_token=...&type=recovery)
+        const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+        if (accessToken && refreshToken) {
+          const { error: setSessErr } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (setSessErr) {
+            return {
+              ok: false,
+              message: `Sesi tautan pemulihan tidak valid atau sudah kedaluwarsa (${setSessErr.message}). Silakan kirim ulang permintaan reset password.`,
+            };
+          }
+        }
+      }
+    }
+
+    // 4. Strictly verify active user identity directly from Supabase Auth server via getUser()
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+
+    if (userErr || !userData?.user) {
+      return {
+        ok: false,
+        message:
+          'Sesi pemulihan password tidak ditemukan atau sudah kedaluwarsa. Silakan minta tautan pemulihan baru melalui menu Lupa Password.',
+      };
+    }
+
+    const user = userData.user;
+
+    if (!isVerifiedTeacherAuthUser(user)) {
+      return {
+        ok: false,
+        message:
+          'Sesi aktif saat ini adalah sesi anonim atau tidak memiliki email guru yang valid. Pembaruan password ditolak demi keamanan akun.',
+      };
+    }
+
+    return {
+      ok: true,
+      userId: user.id,
+      email: user.email!.trim().toLowerCase(),
+      displayName:
+        user.user_metadata?.name ||
+        user.user_metadata?.display_name ||
+        user.email!.split('@')[0],
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: err?.message || 'Gagal memverifikasi identitas sesi pemulihan password.',
+    };
+  }
+}
+
+/**
+ * 11. updateTeacherNewPassword(newPassword, expectedEmail, expectedUserId)
  * Updates the authenticated teacher user's password via Supabase Auth during PASSWORD_RECOVERY.
- * Never uses Local Demo Mode.
+ * Strictly verifies user identity before and after updateUser, never trims password,
+ * syncs teacher_profiles without duplicates, and preserves the valid Supabase session.
  */
 export async function updateTeacherNewPassword(
   newPassword: string,
-): Promise<{ ok: boolean; message: string }> {
-  const cleanedPassword = String(newPassword || '');
-  if (cleanedPassword.length < 6) {
+  expectedEmail?: string,
+  expectedUserId?: string,
+): Promise<{
+  ok: boolean;
+  message: string;
+  email?: string;
+  userId?: string;
+  teacherName?: string;
+  sessionToken?: string;
+  profileSyncWarning?: string;
+}> {
+  // IMPORTANT: Never use trim() on password. Process exact user input.
+  if (typeof newPassword !== 'string' || newPassword.length < 6) {
     return {
       ok: false,
       message: 'Password baru minimal harus terdiri dari 6 karakter.',
@@ -961,8 +1091,43 @@ export async function updateTeacherNewPassword(
   }
 
   try {
+    // 1. Re-verify active session identity via getUser() right before updating password
+    const { data: preCheckData, error: preCheckErr } = await supabase.auth.getUser();
+    if (preCheckErr || !preCheckData?.user) {
+      return {
+        ok: false,
+        message:
+          'Sesi pemulihan password tidak valid atau telah berakhir. Silakan kirim ulang tautan pemulihan password.',
+      };
+    }
+
+    const preUser = preCheckData.user;
+    if (!isVerifiedTeacherAuthUser(preUser)) {
+      return {
+        ok: false,
+        message:
+          'Identitas sesi tidak valid atau merupakan akun anonim. Tidak diizinkan memperbarui password.',
+      };
+    }
+
+    const preEmail = preUser.email!.trim().toLowerCase();
+    if (expectedEmail && preEmail !== expectedEmail.trim().toLowerCase()) {
+      return {
+        ok: false,
+        message: `Konflik identitas sesi: Sesi aktif (${preEmail}) tidak cocok dengan akun yang sedang dipulihkan (${expectedEmail}).`,
+      };
+    }
+
+    if (expectedUserId && preUser.id !== expectedUserId) {
+      return {
+        ok: false,
+        message: 'Konflik ID sesi pengguna. Silakan buka kembali tautan pemulihan dari email Anda.',
+      };
+    }
+
+    // 2. Update password in Supabase Auth with exact password string (no trim)
     const { data, error } = await supabase.auth.updateUser({
-      password: cleanedPassword,
+      password: newPassword,
     });
 
     if (error) {
@@ -972,16 +1137,83 @@ export async function updateTeacherNewPassword(
       };
     }
 
-    if (!data?.user) {
+    const updatedUser = data?.user;
+    if (!updatedUser || !isVerifiedTeacherAuthUser(updatedUser)) {
       return {
         ok: false,
-        message: 'Sesi pemulihan password tidak ditemukan atau sudah kedaluwarsa. Silakan kirim ulang tautan reset password.',
+        message:
+          'Respons pembaruan password tidak mengembalikan identitas akun guru yang valid.',
       };
+    }
+
+    const updatedEmail = updatedUser.email!.trim().toLowerCase();
+    if (updatedUser.id !== preUser.id || updatedEmail !== preEmail) {
+      return {
+        ok: false,
+        message:
+          'Peringatan keamanan: Identitas akun setelah update tidak sesuai dengan identitas yang diverifikasi.',
+      };
+    }
+
+    // 3. Synchronize teacher_profiles by auth_user_id without creating duplicates
+    const now = new Date().toISOString();
+    let resolvedTeacherName =
+      updatedUser.user_metadata?.name ||
+      updatedUser.user_metadata?.display_name ||
+      updatedEmail.split('@')[0];
+    let profileSyncWarning: string | undefined;
+
+    const { data: existingProfile, error: selectErr } = await supabase
+      .from('teacher_profiles')
+      .select('id, auth_user_id, display_name, role, created_at')
+      .eq('auth_user_id', updatedUser.id)
+      .maybeSingle();
+
+    if (selectErr) {
+      profileSyncWarning = `Catatan profil: Gagal memeriksa teacher_profiles (${selectErr.message}).`;
+    } else if (existingProfile) {
+      resolvedTeacherName = existingProfile.display_name || resolvedTeacherName;
+    } else {
+      const newProfilePayload = {
+        id: `tch_${updatedUser.id}`,
+        auth_user_id: updatedUser.id,
+        display_name: resolvedTeacherName,
+        role: 'teacher',
+        created_at: updatedUser.created_at || now,
+      };
+
+      const { data: insertedProfile, error: insertErr } = await supabase
+        .from('teacher_profiles')
+        .upsert(newProfilePayload, { onConflict: 'id' })
+        .select('id, auth_user_id, display_name, role, created_at')
+        .maybeSingle();
+
+      if (insertErr) {
+        profileSyncWarning = `Password berhasil diperbarui, namun sinkronisasi profil teacher_profiles mengalami kendala: ${insertErr.message}`;
+      } else if (insertedProfile?.display_name) {
+        resolvedTeacherName = insertedProfile.display_name;
+      }
+    }
+
+    // 4. Preserve valid Supabase session token
+    const { data: sessionData } = await supabase.auth.getSession();
+    const activeToken =
+      sessionData?.session?.access_token || `sb_tch_${updatedUser.id}`;
+
+    try {
+      sessionStorage.setItem('aqua_math_admin_token_v1', activeToken);
+    } catch {
+      // ignore storage quota errors
     }
 
     return {
       ok: true,
-      message: 'Password baru berhasil disimpan! Silakan login menggunakan password baru Anda.',
+      userId: updatedUser.id,
+      email: updatedEmail,
+      teacherName: resolvedTeacherName,
+      sessionToken: activeToken,
+      profileSyncWarning,
+      message: `Password untuk akun ${updatedEmail} berhasil diperbarui! Membuka Dashboard Guru...`,
     };
   } catch (err: any) {
     return {
@@ -990,4 +1222,5 @@ export async function updateTeacherNewPassword(
     };
   }
 }
+
 

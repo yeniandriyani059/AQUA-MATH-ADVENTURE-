@@ -332,7 +332,7 @@ export async function loginTeacherAdmin(
   password: string,
 ): Promise<{ ok: boolean; message?: string; teacherName?: string }> {
   const rawInput = (usernameOrEmail || '').trim().toLowerCase();
-  if (!rawInput || !password) {
+  if (!rawInput || typeof password !== 'string' || password.length === 0) {
     return { ok: false, message: 'Email/Username dan password guru wajib diisi.' };
   }
 
@@ -342,19 +342,43 @@ export async function loginTeacherAdmin(
     ? [rawInput]
     : [`tch_${normUser}@aquamath.org`, `${normUser}@aquamath.org`];
 
-  // 1. Primary Path: Direct Supabase Authentication (Works on Vercel Production & Local)
+  // Primary Path: Direct Supabase Authentication (Works on Vercel Production & Local)
   if (isSupabaseConfigured && supabase) {
     let lastAuthError = '';
 
     for (const emailToTry of candidateEmails) {
       try {
+        // IMPORTANT: Do not trim or modify password; pass exact user input.
         const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
           email: emailToTry,
-          password: String(password),
+          password: password,
         });
 
         if (!authErr && authData?.user) {
           const authUser = authData.user;
+
+          // Verify user identity before querying teacher_profiles
+          if (
+            !authUser.id ||
+            authUser.is_anonymous === true ||
+            authUser.app_metadata?.provider === 'anonymous' ||
+            !authUser.email
+          ) {
+            await supabase.auth.signOut().catch(() => {});
+            return {
+              ok: false,
+              message: 'Identitas akun tidak valid atau merupakan sesi anonim.',
+            };
+          }
+
+          if (authUser.email.trim().toLowerCase() !== emailToTry.trim().toLowerCase()) {
+            await supabase.auth.signOut().catch(() => {});
+            return {
+              ok: false,
+              message: 'Identitas email sesi tidak sesuai dengan email yang digunakan untuk login.',
+            };
+          }
+
           const now = new Date().toISOString();
 
           // Query teacher_profiles by auth_user_id matching auth.uid()
@@ -419,37 +443,16 @@ export async function loginTeacherAdmin(
       ok: false,
       message: `Login gagal: ${
         lastAuthError === 'Invalid login credentials'
-          ? 'Email/Username atau password salah. Jika Anda mendaftar dengan email (misal: nama@gmail.com), masukkan alamat email lengkap Anda.'
+          ? 'Email atau password salah. Pastikan Anda memasukkan alamat email lengkap yang terdaftar di Supabase (contoh: nama@gmail.com) beserta password yang benar.'
           : lastAuthError || 'Kredensial tidak valid.'
       }`,
     };
   }
 
-  // 2. Secondary Path: Backend API endpoint if Supabase client env is not present in browser
-  try {
-    const response = await fetch('/api/admin/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: rawInput, password }),
-    });
-    if (response.ok) {
-      const data = await response.json();
-      if (data.ok && data.token) {
-        sessionStorage.setItem(STORAGE_KEYS.ADMIN_TOKEN, data.token);
-        return { ok: true, teacherName: data.teacherName || 'Ibu/Bapak Guru' };
-      }
-    }
-    const errData = await response.json().catch(() => ({}));
-    return {
-      ok: false,
-      message: errData.message || 'Email/Username atau password guru tidak sesuai.',
-    };
-  } catch {
-    return {
-      ok: false,
-      message: 'Konfigurasi Supabase belum aktif atau koneksi jaringan terputus.',
-    };
-  }
+  return {
+    ok: false,
+    message: 'Konfigurasi Supabase belum aktif. Tidak dapat melakukan autentikasi guru.',
+  };
 }
 
 export async function registerTeacherAdmin(data: {

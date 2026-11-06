@@ -47,6 +47,7 @@ import {
   requestTeacherPasswordReset,
   resetStudentPasswordByTeacher,
   updateTeacherNewPassword,
+  verifyTeacherRecoverySession,
 } from '../services/supabaseService';
 import { isSupabaseConfigured, SUPABASE_SCHEMA_SQL } from '../services/supabaseClient';
 import { ClassSettings, StudentProfile } from '../types/game';
@@ -81,19 +82,52 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [teacherNameInput, setTeacherNameInput] = useState('');
   const [usernameInput, setUsernameInput] = useState('');
   const [resetEmailInput, setResetEmailInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
+  const [loginPasswordInput, setLoginPasswordInput] = useState('');
+  const [newTeacherPasswordInput, setNewTeacherPasswordInput] = useState('');
   const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginSuccessMessage, setLoginSuccessMessage] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // Verified recovery session state (populated exclusively from supabase.auth.getUser())
+  const [isVerifyingRecovery, setIsVerifyingRecovery] = useState<boolean>(initialRecoveryMode);
+  const [verifiedRecoveryEmail, setVerifiedRecoveryEmail] = useState<string | null>(null);
+  const [verifiedRecoveryUserId, setVerifiedRecoveryUserId] = useState<string | null>(null);
+
   useEffect(() => {
-    if (initialRecoveryMode) {
+    let active = true;
+
+    const runVerifyRecovery = async () => {
       setAuthenticated(false);
       setAuthTab('update_password');
       setLoginError(null);
       setLoginSuccessMessage(null);
+      setIsVerifyingRecovery(true);
+      setVerifiedRecoveryEmail(null);
+      setVerifiedRecoveryUserId(null);
+
+      const res = await verifyTeacherRecoverySession();
+      if (!active) return;
+
+      setIsVerifyingRecovery(false);
+      if (res.ok && res.email && res.userId) {
+        setVerifiedRecoveryEmail(res.email);
+        setVerifiedRecoveryUserId(res.userId);
+      } else {
+        setLoginError(
+          res.message ||
+            'Identitas akun untuk pemulihan password tidak dapat diverifikasi. Silakan kirim ulang tautan pemulihan password.',
+        );
+      }
+    };
+
+    if (initialRecoveryMode) {
+      runVerifyRecovery();
     }
+
+    return () => {
+      active = false;
+    };
   }, [initialRecoveryMode]);
 
   const [activeTab, setActiveTab] = useState<
@@ -218,24 +252,45 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       }
 
       if (authTab === 'update_password') {
-        if (passwordInput.length < 6) {
+        if (!verifiedRecoveryEmail || !verifiedRecoveryUserId) {
+          setLoginError(
+            'Identitas akun belum terverifikasi. Tidak diizinkan memperbarui password tanpa sesi pemulihan Supabase yang sah.',
+          );
+          return;
+        }
+        if (newTeacherPasswordInput.length < 6) {
           setLoginError('Password baru minimal harus terdiri dari 6 karakter.');
           return;
         }
-        if (passwordInput !== confirmPasswordInput) {
+        if (newTeacherPasswordInput !== confirmPasswordInput) {
           setLoginError('Konfirmasi password tidak cocok dengan password baru.');
           return;
         }
-        const res = await updateTeacherNewPassword(passwordInput);
+        const res = await updateTeacherNewPassword(
+          newTeacherPasswordInput,
+          verifiedRecoveryEmail,
+          verifiedRecoveryUserId,
+        );
         if (res.ok) {
-          setPasswordInput('');
+          setNewTeacherPasswordInput('');
           setConfirmPasswordInput('');
           onCompletePasswordRecovery?.();
-          if (typeof window !== 'undefined' && window.location.hash.includes('type=recovery')) {
+          if (
+            typeof window !== 'undefined' &&
+            (window.location.hash.includes('type=recovery') ||
+              window.location.hash.includes('access_token=') ||
+              window.location.search.includes('code=') ||
+              window.location.search.includes('token_hash='))
+          ) {
             window.history.replaceState(null, '', window.location.pathname);
           }
-          setAuthTab('login');
-          setLoginSuccessMessage(res.message);
+          if (res.profileSyncWarning) {
+            setStatusBanner(res.profileSyncWarning);
+          } else {
+            setStatusBanner(res.message);
+          }
+          // Directly enter Teacher Dashboard using the verified, active Supabase session
+          setAuthenticated(true);
         } else {
           setLoginError(res.message);
         }
@@ -248,37 +303,39 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           return;
         }
         if (!usernameInput.trim()) {
-          setLoginError('Username guru wajib diisi.');
+          setLoginError('Email atau Username guru wajib diisi.');
           return;
         }
-        if (passwordInput !== confirmPasswordInput) {
+        if (newTeacherPasswordInput !== confirmPasswordInput) {
           setLoginError('Konfirmasi password tidak cocok dengan password.');
           return;
         }
         const res = await registerTeacherAdmin({
           name: teacherNameInput,
           username: usernameInput,
-          password: passwordInput,
+          password: newTeacherPasswordInput,
           confirmPassword: confirmPasswordInput,
         });
         if (res.ok) {
           setAuthenticated(true);
-          setPasswordInput('');
+          setNewTeacherPasswordInput('');
           setConfirmPasswordInput('');
         } else {
           setLoginError(res.message || 'Pendaftaran guru gagal. Silakan coba lagi.');
         }
       } else {
-        if (!usernameInput.trim() || !passwordInput) {
-          setLoginError('Username dan password guru wajib diisi.');
+        if (!usernameInput.trim() || !loginPasswordInput) {
+          setLoginError('Email/Username dan password guru wajib diisi.');
           return;
         }
-        const res = await loginTeacherAdmin(usernameInput, passwordInput);
+        const res = await loginTeacherAdmin(usernameInput, loginPasswordInput);
         if (res.ok) {
           setAuthenticated(true);
-          setPasswordInput('');
+          setLoginPasswordInput('');
         } else {
-          setLoginError(res.message || 'Login guru gagal. Silakan periksa kembali username dan password.');
+          setLoginError(
+            res.message || 'Login guru gagal. Silakan periksa kembali email dan password.',
+          );
         }
       }
     } catch (err: any) {
@@ -514,47 +571,93 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
             )}
 
-            {(authTab === 'login' || authTab === 'register' || authTab === 'update_password') && (
+            {authTab === 'update_password' && (
+              <div className="p-3.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/70 text-xs font-bold text-cyan-100">
+                {isVerifyingRecovery ? (
+                  <span>Memverifikasi identitas sesi pemulihan password...</span>
+                ) : verifiedRecoveryEmail ? (
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-300 shrink-0" />
+                    <span>
+                      Mengatur password untuk akun:{' '}
+                      <strong className="text-yellow-300 font-mono">{verifiedRecoveryEmail}</strong>
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-rose-200">
+                    Identitas akun tidak terverifikasi. Silakan minta tautan pemulihan baru melalui menu Lupa Password.
+                  </span>
+                )}
+              </div>
+            )}
+
+            {authTab === 'login' && (
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label
-                    htmlFor="teacher-password"
+                    htmlFor="teacher-login-password"
+                    className="block text-xs font-bold text-cyan-100"
+                  >
+                    Password Guru
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playClick();
+                      setAuthTab('forgot_password');
+                      setLoginError(null);
+                      setLoginSuccessMessage(null);
+                    }}
+                    className="text-xs font-bold text-yellow-300 hover:text-yellow-200 underline cursor-pointer"
+                  >
+                    Lupa Password?
+                  </button>
+                </div>
+                <input
+                  id="teacher-login-password"
+                  name="teacher-login-password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={loginPasswordInput}
+                  onChange={(e) => setLoginPasswordInput(e.target.value)}
+                  placeholder="Masukkan password..."
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
+                />
+              </div>
+            )}
+
+            {(authTab === 'register' ||
+              (authTab === 'update_password' && verifiedRecoveryEmail && !isVerifyingRecovery)) && (
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label
+                    htmlFor="teacher-new-password"
                     className="block text-xs font-bold text-cyan-100"
                   >
                     {authTab === 'update_password' ? 'Password Baru' : 'Password Guru'}
                   </label>
-                  {authTab === 'login' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        soundManager.playClick();
-                        setAuthTab('forgot_password');
-                        setLoginError(null);
-                        setLoginSuccessMessage(null);
-                      }}
-                      className="text-xs font-bold text-yellow-300 hover:text-yellow-200 underline cursor-pointer"
-                    >
-                      Lupa Password?
-                    </button>
-                  )}
                 </div>
                 <input
-                  id="teacher-password"
+                  id="teacher-new-password"
+                  name="teacher-new-password"
                   type="password"
+                  autoComplete="new-password"
                   required
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
+                  value={newTeacherPasswordInput}
+                  onChange={(e) => setNewTeacherPasswordInput(e.target.value)}
                   placeholder={
                     authTab === 'update_password'
                       ? 'Masukkan password baru (min. 6 karakter)...'
-                      : 'Masukkan password...'
+                      : 'Masukkan password (min. 6 karakter)...'
                   }
                   className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
                 />
               </div>
             )}
 
-            {(authTab === 'register' || authTab === 'update_password') && (
+            {(authTab === 'register' ||
+              (authTab === 'update_password' && verifiedRecoveryEmail && !isVerifyingRecovery)) && (
               <div>
                 <label
                   htmlFor="teacher-confirm-password"
@@ -564,7 +667,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 </label>
                 <input
                   id="teacher-confirm-password"
+                  name="teacher-confirm-password"
                   type="password"
+                  autoComplete="new-password"
                   required
                   value={confirmPasswordInput}
                   onChange={(e) => setConfirmPasswordInput(e.target.value)}
@@ -574,24 +679,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={isLoggingIn}
-              className="w-full py-3.5 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-base border-2 border-white shadow-lg cursor-pointer flex items-center justify-center gap-2 transition-transform active:scale-95 disabled:opacity-50 mt-2"
-            >
-              <span>
-                {isLoggingIn
-                  ? 'Memproses...'
-                  : authTab === 'register'
-                    ? 'Daftar Akun Guru & Masuk'
-                    : authTab === 'forgot_password'
-                      ? 'Kirim Tautan Pemulihan Password'
-                      : authTab === 'update_password'
-                        ? 'Simpan Password Baru'
-                        : 'Masuk ke Dashboard Guru'}
-              </span>
-              <ArrowRight className="w-5 h-5 stroke-[2.75]" />
-            </button>
+            {!(authTab === 'update_password' && (!verifiedRecoveryEmail || isVerifyingRecovery)) && (
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="w-full py-3.5 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-base border-2 border-white shadow-lg cursor-pointer flex items-center justify-center gap-2 transition-transform active:scale-95 disabled:opacity-50 mt-2"
+              >
+                <span>
+                  {isLoggingIn
+                    ? 'Memproses...'
+                    : authTab === 'register'
+                      ? 'Daftar Akun Guru & Masuk'
+                      : authTab === 'forgot_password'
+                        ? 'Kirim Tautan Pemulihan Password'
+                        : authTab === 'update_password'
+                          ? 'Simpan Password Baru'
+                          : 'Masuk ke Dashboard Guru'}
+                </span>
+                <ArrowRight className="w-5 h-5 stroke-[2.75]" />
+              </button>
+            )}
 
             {(authTab === 'forgot_password' || authTab === 'update_password') && (
               <div className="text-center pt-1">

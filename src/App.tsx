@@ -114,16 +114,22 @@ export default function App() {
   const [toastNotice, setToastNotice] = useState<string | null>(null);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(false);
 
-  // Listen for Supabase PASSWORD_RECOVERY event when user clicks email reset link
+  // Listen for Supabase PASSWORD_RECOVERY event and verify recovery tokens/codes
   useEffect(() => {
     if (!supabase) return;
 
-    // Also inspect initial URL hash if type=recovery was just loaded
-    if (
+    let isMounted = true;
+
+    const hasRecoveryUrlParams =
       typeof window !== 'undefined' &&
       (window.location.hash.includes('type=recovery') ||
-        window.location.search.includes('type=recovery'))
-    ) {
+        window.location.hash.includes('access_token=') ||
+        window.location.search.includes('type=recovery') ||
+        window.location.search.includes('code=') ||
+        window.location.search.includes('token_hash='));
+
+    if (hasRecoveryUrlParams) {
+      // Open Teacher Portal so TeacherDashboard can run strict token/session verification
       setIsPasswordRecovery(true);
       setShellState('teacher');
     }
@@ -131,6 +137,7 @@ export default function App() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event) => {
+      if (!isMounted) return;
       if (event === 'PASSWORD_RECOVERY') {
         setIsPasswordRecovery(true);
         setShellState('teacher');
@@ -138,6 +145,7 @@ export default function App() {
     });
 
     return () => {
+      isMounted = false;
       subscription.unsubscribe();
     };
   }, []);
