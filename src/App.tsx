@@ -118,6 +118,7 @@ export default function App() {
   const [soundMuted, setSoundMuted] = useState<boolean>(() => soundManager.isMuted());
   const [toastNotice, setToastNotice] = useState<string | null>(null);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(false);
+  const [showLandscapeHint, setShowLandscapeHint] = useState<boolean>(true);
 
   // Verify active student session on mount so gameplay always uses a real authenticated studentSupabase session
   useEffect(() => {
@@ -232,7 +233,28 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [toastNotice]);
 
-  const currentProfile = activeStudent;
+  const currentProfile =
+    activeStudent ||
+    (students.length > 0 ? students[0] : null) ||
+    (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autostart') === '1'
+      ? {
+          id: 'demo-autostart-preview',
+          name: 'Petualang Aqua',
+          characterId: 'bima' as const,
+          createdAt: new Date().toISOString(),
+          solo: {
+            unlockedLevel: 1,
+            bestTotalScore: 30,
+            latestTotalScore: 30,
+            locations: {},
+          },
+          championship: {
+            unlockedLevel: 1,
+            totalChampionshipScore: 30,
+            locations: {},
+          },
+        }
+      : null);
   const unlockedLevel = currentProfile
     ? gameMode === 'solo'
       ? currentProfile.solo.unlockedLevel
@@ -712,12 +734,20 @@ export default function App() {
           SCREEN 4: 3D PLAYING HUD (Unobstructed Center Viewport, Solid/RGBA)
           ===================================================================== */}
       {shellState === 'playing' && currentProfile && (
-        <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-2.5 sm:p-4">
+        <div
+          style={{
+            paddingTop: 'max(0.6rem, env(safe-area-inset-top))',
+            paddingBottom: 'max(0.6rem, env(safe-area-inset-bottom))',
+            paddingLeft: 'max(0.6rem, env(safe-area-inset-left))',
+            paddingRight: 'max(0.6rem, env(safe-area-inset-right))',
+          }}
+          className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-2 sm:p-4 select-none"
+        >
           {/* TOP PERIMETER ROW: Compact Mobile-First HUD Bar */}
           <div className="flex items-start justify-between gap-2">
-            {/* Top-Left: Player Avatar, Name, Score & POS 1/10 Indicator in a single compact glass card */}
+            {/* Top-Left: Player Avatar, Name, Score & POS 1/10 Indicator */}
             <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
-              <div className="bg-sky-950/85 backdrop-blur-md border border-cyan-400/70 rounded-2xl px-2.5 py-1.5 shadow-xl flex items-center gap-2">
+              <div className="bg-sky-950/90 backdrop-blur-md border border-cyan-400/70 rounded-2xl px-2 sm:px-2.5 py-1 sm:py-1.5 shadow-xl flex items-center gap-1.5 sm:gap-2">
                 <CharacterAvatarSvg
                   characterId={currentProfile.characterId}
                   className="w-7 h-7 sm:w-9 sm:h-9 shrink-0"
@@ -753,7 +783,7 @@ export default function App() {
                     e.currentTarget.blur();
                     handleTriggerInteract(nearbyLocation);
                   }}
-                  className="flex items-center gap-1.5 px-3.5 sm:px-4 py-1.5 sm:py-2 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-sm border-2 border-white shadow-2xl cursor-pointer active:scale-95 transition-transform animate-bounce"
+                  className="flex items-center gap-1.5 px-3.5 sm:px-4 py-1.5 sm:py-2 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-sm border-2 border-white shadow-2xl cursor-pointer active:scale-95 transition-transform animate-bounce touch-manipulation"
                 >
                   <Play className="w-3.5 h-3.5 fill-sky-950 text-sky-950" />
                   <span>MULAI MISI [E]</span>
@@ -763,7 +793,7 @@ export default function App() {
 
             {/* Top-Right: Sound, PWA Install & Menu Buttons */}
             <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
-              <PWAInstallButton className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-cyan-400 text-sky-950 font-bold text-xs shadow-md border border-white" />
+              <PWAInstallButton className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-xl bg-cyan-400 text-sky-950 font-bold text-[10px] sm:text-xs shadow-md border border-white touch-manipulation" />
 
               <button
                 type="button"
@@ -774,12 +804,12 @@ export default function App() {
                 }}
                 aria-label={soundMuted ? 'Aktifkan Suara' : 'Matikan Suara'}
                 title={soundMuted ? 'Suara Mati' : 'Suara Aktif'}
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sky-950/85 backdrop-blur-md hover:bg-sky-800 text-cyan-200 border border-cyan-400/70 flex items-center justify-center text-xs font-bold cursor-pointer transition-transform active:scale-95 shadow-lg"
+                className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-xl bg-sky-950/85 backdrop-blur-md hover:bg-sky-800 text-cyan-200 border border-cyan-400/70 flex items-center justify-center text-xs font-bold cursor-pointer transition-transform active:scale-95 shadow-lg touch-manipulation"
               >
                 {soundMuted ? (
-                  <VolumeX className="w-3.5 h-3.5 text-rose-300 stroke-[2.5]" />
+                  <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-300 stroke-[2.5]" />
                 ) : (
-                  <Volume2 className="w-3.5 h-3.5 text-cyan-200 stroke-[2.5]" />
+                  <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-200 stroke-[2.5]" />
                 )}
               </button>
 
@@ -795,12 +825,30 @@ export default function App() {
                 }}
                 aria-label="Buka Menu Permainan"
                 title="Menu Permainan [P]"
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sky-950/85 backdrop-blur-md hover:bg-sky-800 text-cyan-100 border border-cyan-400/70 flex items-center justify-center text-xs font-bold cursor-pointer transition-transform active:scale-95 shadow-lg"
+                className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-xl bg-sky-950/85 backdrop-blur-md hover:bg-sky-800 text-cyan-100 border border-cyan-400/70 flex items-center justify-center text-xs font-bold cursor-pointer transition-transform active:scale-95 shadow-lg touch-manipulation"
               >
-                <Menu className="w-3.5 h-3.5 text-cyan-200 stroke-[2.5]" />
+                <Menu className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-200 stroke-[2.5]" />
               </button>
             </div>
           </div>
+
+          {/* Optional Portrait Mobile Helper Banner (Advising landscape for wider 3D view) */}
+          {showLandscapeHint && (
+            <div className="sm:hidden pointer-events-auto flex items-center justify-between gap-2 px-3 py-1 rounded-xl bg-sky-950/85 backdrop-blur-xs border border-cyan-400/50 shadow-md text-cyan-100 text-[10px] font-bold mx-auto -mt-1 z-10 animate-fade-in">
+              <div className="flex items-center gap-1.5">
+                <Smartphone className="w-3 h-3 text-yellow-300 rotate-90 shrink-0" />
+                <span>Putar HP ke Landscape untuk ruang pandang luas</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLandscapeHint(false)}
+                className="text-cyan-300 hover:text-white px-1 font-bold text-xs cursor-pointer touch-manipulation"
+                aria-label="Tutup saran orientasi"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* BOTTOM PERIMETER ROW: Left Virtual Joystick + Unobstructed Center Viewport + Right Action Buttons */}
           <div className="flex items-end justify-between gap-3">
@@ -808,7 +856,7 @@ export default function App() {
             <VirtualJoystick joystickRef={joystickRef} />
 
             {/* Bottom-Right Mobile Adventure Controls: LARI, LOMPAT & Circular 3D Camera Radial Menu */}
-            <div className="flex items-end gap-2.5 sm:gap-3 pointer-events-auto">
+            <div className="flex items-end gap-2 sm:gap-3 pointer-events-auto">
               {/* Circular Sprint (LARI) Button */}
               <button
                 type="button"
@@ -821,14 +869,14 @@ export default function App() {
                 }}
                 aria-label={isSprinting ? 'Matikan Lari' : 'Aktifkan Lari Cepat'}
                 title={isSprinting ? 'Lari Cepat: Aktif [Shift]' : 'Lari Cepat [Shift]'}
-                className={`w-12 h-12 sm:w-13 sm:h-13 rounded-full flex flex-col items-center justify-center border-2 transition-all cursor-pointer shadow-xl active:scale-90 ${
+                className={`w-12 h-12 sm:w-14 sm:h-14 lg:w-16 lg:h-16 rounded-full flex flex-col items-center justify-center border-2 transition-all cursor-pointer shadow-xl active:scale-90 touch-manipulation select-none ${
                   isSprinting
                     ? 'bg-emerald-400 text-sky-950 border-white shadow-[0_0_14px_rgba(52,211,153,0.7)] scale-105'
                     : 'bg-sky-950/90 hover:bg-sky-900 text-cyan-200 border-cyan-400/80 shadow-[0_4px_12px_rgba(3,43,67,0.6)]'
                 }`}
               >
-                <Zap className="w-4 h-4 stroke-[2.75]" />
-                <span className="text-[9px] font-['Fredoka'] font-bold uppercase tracking-wider mt-0.5">
+                <Zap className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.75]" />
+                <span className="text-[9px] sm:text-[10px] font-['Fredoka'] font-bold uppercase tracking-wider mt-0.5">
                   {isSprinting ? 'ON' : 'LARI'}
                 </span>
               </button>
@@ -844,10 +892,10 @@ export default function App() {
                 }}
                 aria-label="Lompat"
                 title="Lompat [Space]"
-                className="w-13 h-13 sm:w-15 sm:h-15 rounded-full bg-gradient-to-b from-yellow-300 via-amber-400 to-amber-500 hover:from-yellow-200 hover:to-amber-400 text-sky-950 border-2 border-white flex flex-col items-center justify-center shadow-[0_0_16px_rgba(250,204,21,0.55)] cursor-pointer active:scale-90 transition-transform"
+                className="w-13 h-13 sm:w-16 sm:h-16 lg:w-18 lg:h-18 rounded-full bg-gradient-to-b from-yellow-300 via-amber-400 to-amber-500 hover:from-yellow-200 hover:to-amber-400 text-sky-950 border-2 border-white flex flex-col items-center justify-center shadow-[0_0_16px_rgba(250,204,21,0.55)] cursor-pointer active:scale-90 transition-transform touch-manipulation select-none"
               >
-                <ArrowUp className="w-5 h-5 stroke-[3]" />
-                <span className="text-[9px] font-['Fredoka'] font-extrabold uppercase tracking-wider mt-0.5">
+                <ArrowUp className="w-5 h-5 sm:w-6 sm:h-6 stroke-[3]" />
+                <span className="text-[9px] sm:text-[10px] font-['Fredoka'] font-extrabold uppercase tracking-wider mt-0.5">
                   LOMPAT
                 </span>
               </button>
@@ -1017,6 +1065,9 @@ export default function App() {
                   <Home className="w-4 h-4 text-cyan-300" />
                   <span>KEMBALI KE HALAMAN AWAL</span>
                 </button>
+
+                {/* PWA Install Option */}
+                <PWAInstallButton className="w-full py-2.5 rounded-2xl bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-['Fredoka'] font-bold text-sm border-2 border-white cursor-pointer flex items-center justify-center gap-2 transition-transform active:scale-95 shadow-md touch-manipulation" />
 
                 {/* 4. KELUAR */}
                 <button

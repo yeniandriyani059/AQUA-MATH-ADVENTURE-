@@ -29,14 +29,20 @@ export const MissionResultModal: React.FC<MissionResultModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Hasil Penyelesaian Misi"
-      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-sky-950/92 backdrop-blur-xs pointer-events-auto overflow-hidden"
+      style={{
+        paddingTop: 'max(0.5rem, env(safe-area-inset-top))',
+        paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+        paddingLeft: 'max(0.5rem, env(safe-area-inset-left))',
+        paddingRight: 'max(0.5rem, env(safe-area-inset-right))',
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-sky-950/92 backdrop-blur-xs pointer-events-auto overflow-hidden"
     >
-      <div className="w-full max-w-md sm:max-w-xl md:max-w-2xl bg-sky-900 border-3 sm:border-4 border-yellow-400 rounded-3xl shadow-2xl overflow-hidden my-auto max-h-[85dvh] flex flex-col">
+      <div className="w-full max-w-xl md:max-w-2xl lg:max-w-3xl bg-sky-900 border-2 sm:border-4 border-yellow-400 rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden my-auto h-[94vh] h-[94dvh] max-h-[96vh] max-h-[96dvh] flex flex-col">
         {/* Top Header */}
-        <div className="bg-sky-950 px-4 sm:px-5 py-3 border-b-2 border-cyan-500/40 flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-3">
-            <MedalBadgeSvg medal={summary.medal} className="w-10 h-10 sm:w-12 sm:h-12 shrink-0" />
-            <div>
+        <div className="bg-sky-950 px-3.5 sm:px-5 py-2.5 sm:py-3 border-b-2 border-cyan-500/40 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 truncate">
+            <MedalBadgeSvg medal={summary.medal} className="w-9 h-9 sm:w-11 sm:h-11 shrink-0" />
+            <div className="truncate">
               <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-yellow-300">
                 HASIL MISI · POS {location.id}
               </div>
@@ -54,8 +60,8 @@ export const MissionResultModal: React.FC<MissionResultModalProps> = ({
           </div>
         </div>
 
-        {/* Compact Result Summary Body */}
-        <div className="p-3.5 sm:p-5 overflow-y-auto space-y-3.5 flex-1 max-h-[55dvh]">
+        {/* Natural Scrollable Result Summary Body (NO artificial nested limit) */}
+        <div className="p-3 sm:p-5 overflow-y-auto overscroll-contain space-y-3 sm:space-y-4 flex-1">
           {/* 3 Metric Cards */}
           <div className="grid grid-cols-3 gap-2 sm:gap-3 text-center">
             <div className="bg-sky-950 border border-emerald-400/60 rounded-2xl p-2.5">
