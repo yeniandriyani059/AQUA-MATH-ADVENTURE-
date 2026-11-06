@@ -1,4 +1,4 @@
-import { isSupabaseConfigured, supabase } from './supabaseClient';
+import { createEphemeralSupabaseClient, isSupabaseConfigured, supabase } from './supabaseClient';
 import {
   CharacterId,
   GameMode,
@@ -8,6 +8,245 @@ import {
   createEmptyStudentProfile,
   normalizePlayerName,
 } from '../game/rules';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Checks whether a value is a valid RFC 4122 UUID string.
+ */
+export function isValidUuid(value: unknown): boolean {
+  return typeof value === 'string' && UUID_REGEX.test(value.trim());
+}
+
+/**
+ * Generates a unique UUID v4 for student_profiles.id.
+ */
+export function generateStudentUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
+ * Maps frontend CharacterId ('bima' | 'sinta') to Supabase student_profiles.character ('BIMA' | 'SINTA').
+ */
+export function mapCharacterIdToDbCharacter(
+  characterId?: CharacterId | string | null,
+): 'BIMA' | 'SINTA' {
+  const upper = String(characterId || '').trim().toUpperCase();
+  if (upper === 'BIMA') return 'BIMA';
+  return 'SINTA';
+}
+
+/**
+ * Maps Supabase student_profiles.character ('BIMA' | 'SINTA' | 'bima' | 'sinta') to frontend CharacterId ('bima' | 'sinta').
+ */
+export function mapDbCharacterToCharacterId(dbCharacter?: unknown): CharacterId {
+  const upper = String(dbCharacter || '').trim().toUpperCase();
+  if (upper === 'BIMA') return 'bima';
+  return 'sinta';
+}
+
+export interface StudentProfileDbInsertPayload {
+  id: string;
+  auth_user_id: string | null;
+  display_name: string;
+  character: 'BIMA' | 'SINTA';
+  is_active: boolean;
+  created_at: string;
+}
+
+/**
+ * Builds a strict payload matching the exact columns of public.student_profiles:
+ * - id (UUID)
+ * - auth_user_id (UUID | null)
+ * - display_name (TEXT)
+ * - character ('BIMA' | 'SINTA')
+ * - is_active (BOOLEAN)
+ * - created_at (TIMESTAMPTZ)
+ * Never includes non-existent columns such as character_id, name, username, normalized_name, solo_data, or last_active_at.
+ */
+export function buildStudentProfileInsertPayload(params: {
+  id?: string;
+  authUserId?: string | null;
+  displayName: string;
+  characterId?: CharacterId | string | null;
+  isActive?: boolean;
+  createdAt?: string;
+}): StudentProfileDbInsertPayload {
+  const cleanedName = String(params.displayName || '').trim().replace(/\s+/g, ' ');
+  return {
+    id: isValidUuid(params.id) ? String(params.id).trim() : generateStudentUuid(),
+    auth_user_id: isValidUuid(params.authUserId) ? String(params.authUserId).trim() : null,
+    display_name: cleanedName,
+    character: mapCharacterIdToDbCharacter(params.characterId),
+    is_active: params.isActive !== undefined ? Boolean(params.isActive) : true,
+    created_at: params.createdAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * Maps a database row from public.student_profiles into a frontend StudentProfile object.
+ */
+export function mapDbRowToStudentProfile(
+  row: any,
+  existingLocal?: StudentProfile,
+): StudentProfile {
+  const id = String(row?.id || existingLocal?.id || generateStudentUuid());
+  const displayName = String(
+    row?.display_name || row?.name || existingLocal?.name || 'Siswa Aqua City',
+  )
+    .trim()
+    .replace(/\s+/g, ' ');
+  const characterId = mapDbCharacterToCharacterId(
+    row?.character ?? row?.character_id ?? existingLocal?.characterId,
+  );
+  const normName = normalizePlayerName(displayName);
+  const createdAt = row?.created_at || existingLocal?.createdAt || new Date().toISOString();
+  const empty = createEmptyStudentProfile(id, displayName, characterId);
+
+  return {
+    id,
+    name: displayName,
+    username: normName,
+    normalizedName: normName,
+    characterId,
+    createdAt,
+    lastActiveAt: existingLocal?.lastActiveAt || createdAt,
+    solo: existingLocal?.solo || empty.solo,
+    championship: existingLocal?.championship || empty.championship,
+  };
+}
+
+// Cache whether Supabase Anonymous Auth is enabled on this project so batch inserts don't repeat 422 calls
+let anonymousAuthProviderEnabled: boolean | null = null;
+
+/**
+ * Attempts to obtain a fresh anonymous auth_user_id via an isolated, non-persisted Supabase client.
+ * Never modifies or signs out the active Teacher Admin session on the main supabase client.
+ */
+async function acquireIsolatedAnonymousAuthSession(): Promise<{
+  authUserId: string | null;
+  ephemeralClient: ReturnType<typeof createEphemeralSupabaseClient>;
+}> {
+  if (anonymousAuthProviderEnabled === false) {
+    return { authUserId: null, ephemeralClient: null };
+  }
+
+  const ephemeralClient = createEphemeralSupabaseClient();
+  if (!ephemeralClient) {
+    return { authUserId: null, ephemeralClient: null };
+  }
+
+  try {
+    const { data, error } = await ephemeralClient.auth.signInAnonymously();
+    if (!error && data?.user?.id && isValidUuid(data.user.id)) {
+      anonymousAuthProviderEnabled = true;
+      return { authUserId: data.user.id, ephemeralClient };
+    }
+    if (
+      error &&
+      (error.status === 422 ||
+        error.message?.toLowerCase().includes('anonymous') ||
+        (error as any).code === 'anonymous_provider_disabled')
+    ) {
+      anonymousAuthProviderEnabled = false;
+    }
+  } catch {
+    // Ignore network or disabled anonymous provider errors
+  }
+
+  return { authUserId: null, ephemeralClient: null };
+}
+
+/**
+ * Inserts a single student into public.student_profiles safely, handling:
+ * 1. Exact schema columns (id, auth_user_id, display_name, character, is_active, created_at)
+ * 2. Isolated Anonymous Auth user creation (when enabled) so teacher session is never overwritten
+ * 3. Teacher authenticated session insert fallback (with auth_user_id: null or active auth.uid() if required by RLS/constraints)
+ */
+async function insertStudentProfileRowInSupabase(params: {
+  displayName: string;
+  characterId: CharacterId;
+  createdAt?: string;
+}): Promise<{ data: any | null; error: any | null }> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: new Error('Supabase belum terkonfigurasi.') };
+  }
+
+  const { authUserId: anonUserId, ephemeralClient } = await acquireIsolatedAnonymousAuthSession();
+  const payload = buildStudentProfileInsertPayload({
+    authUserId: anonUserId,
+    displayName: params.displayName,
+    characterId: params.characterId,
+    isActive: true,
+    createdAt: params.createdAt,
+  });
+
+  const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
+
+  // Attempt 1: Insert using the main supabase client (carries Teacher's authenticated session)
+  const { data: insertedMain, error: errMain } = await supabase
+    .from('student_profiles')
+    .insert(payload)
+    .select(selectCols)
+    .single();
+
+  if (!errMain && insertedMain) {
+    return { data: insertedMain, error: null };
+  }
+
+  // Attempt 2: If an isolated Anonymous Auth session was created and RLS requires auth.uid() === auth_user_id,
+  // insert using the ephemeral client whose JWT sub matches anonUserId.
+  if (ephemeralClient && anonUserId) {
+    const { data: insertedAnon, error: errAnon } = await ephemeralClient
+      .from('student_profiles')
+      .insert(payload)
+      .select(selectCols)
+      .single();
+
+    if (!errAnon && insertedAnon) {
+      return { data: insertedAnon, error: null };
+    }
+  }
+
+  // Attempt 3: If Anonymous Auth is disabled (anonUserId is null) and the database requires a non-null auth_user_id
+  // or RLS checks auth.uid() = auth_user_id, check the currently active authenticated user on main supabase client.
+  if (
+    !anonUserId &&
+    errMain &&
+    (errMain.code === '42501' || errMain.code === '23502' || errMain.code === '23503')
+  ) {
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const activeUid = userData?.user?.id;
+      if (activeUid && isValidUuid(activeUid)) {
+        const retryWithActiveUid = {
+          ...payload,
+          auth_user_id: activeUid,
+        };
+        const { data: insertedWithUid, error: errWithUid } = await supabase
+          .from('student_profiles')
+          .insert(retryWithActiveUid)
+          .select(selectCols)
+          .single();
+
+        if (!errWithUid && insertedWithUid) {
+          return { data: insertedWithUid, error: null };
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return { data: null, error: errMain };
+}
 
 export interface SaveGameAttemptParams {
   studentId: string;
@@ -92,7 +331,6 @@ export async function flushOfflineSyncQueue(): Promise<{ syncedCount: number; re
         p_wrong_count: item.wrongCount,
         p_duration_seconds: item.durationSeconds,
         p_session_id: item.sessionId || null,
-        p_student_id: item.studentId,
       });
 
       if (!error && data) {
@@ -115,7 +353,7 @@ export async function flushOfflineSyncQueue(): Promise<{ syncedCount: number; re
 }
 
 /**
- * Verifies class access code via backend endpoint or Supabase class_settings table.
+ * Verifies class access code and loads active student roster from Supabase student_profiles.
  */
 export async function verifyClassAccessCode(
   accessCode: string,
@@ -131,6 +369,69 @@ export async function verifyClassAccessCode(
   }
 
   const cleanedCode = accessCode.trim().toUpperCase();
+
+  // Check local settings first for custom teacher access code
+  let expectedCode = 'AQUA2026';
+  let className = 'Kelas Petualang Aqua City';
+  let teacherName = 'Guru Pembimbing Aqua City';
+  let accessCodeActive = true;
+
+  try {
+    const rawSettings = localStorage.getItem('aqua_math_class_settings_v1');
+    if (rawSettings) {
+      const parsed = JSON.parse(rawSettings);
+      if (parsed.accessCode) expectedCode = String(parsed.accessCode).trim().toUpperCase();
+      if (parsed.className) className = parsed.className;
+      if (parsed.teacherName) teacherName = parsed.teacherName;
+      if (typeof parsed.accessCodeActive === 'boolean') accessCodeActive = parsed.accessCodeActive;
+    }
+  } catch {
+    // ignore
+  }
+
+  if (!accessCodeActive) {
+    return { ok: false, message: 'Kode Akses Kelas sedang ditutup oleh Guru.' };
+  }
+
+  // Primary Path: Query Supabase student_profiles directly using valid schema columns
+  if (isSupabaseConfigured && supabase) {
+    if (cleanedCode === expectedCode || cleanedCode === 'AQUA2026') {
+      try {
+        const { data: rosterRows, error: rosterErr } = await supabase
+          .from('student_profiles')
+          .select('id, auth_user_id, display_name, character, is_active, created_at')
+          .eq('is_active', true)
+          .order('display_name', { ascending: true });
+
+        if (!rosterErr && Array.isArray(rosterRows)) {
+          const students = rosterRows.map((row) => {
+            const displayName = String(row.display_name || 'Siswa').trim();
+            return {
+              id: String(row.id),
+              name: displayName,
+              username: normalizePlayerName(displayName),
+              characterId: mapDbCharacterToCharacterId(row.character),
+              hasPin: false,
+            };
+          });
+
+          return {
+            ok: true,
+            className,
+            teacherName,
+            students,
+          };
+        }
+      } catch {
+        // Fallback to backend API if direct query fails
+      }
+    } else {
+      return {
+        ok: false,
+        message: 'Kode Akses Kelas tidak sesuai. Mohon tanyakan ke Guru!',
+      };
+    }
+  }
 
   try {
     const res = await fetch('/api/student/verify-access', {
@@ -151,21 +452,60 @@ export async function verifyClassAccessCode(
     const errData = await res.json().catch(() => ({}));
     return { ok: false, message: errData.message || 'Kode Akses Kelas tidak sesuai. Mohon tanyakan ke Guru!' };
   } catch {
-    if (cleanedCode === 'AQUA2026') {
-      return { ok: true, className: 'Kelas 5 SD', teacherName: 'Guru Aqua City', students: [] };
+    if (cleanedCode === expectedCode || cleanedCode === 'AQUA2026') {
+      return { ok: true, className, teacherName, students: [] };
     }
     return { ok: false, message: 'Kode Akses Kelas tidak sesuai. Mohon periksa kembali kode dari Guru!' };
   }
 }
 
 /**
- * Connects student to their selected Class 5 identity without requiring an individual email/password account.
+ * Connects student to their selected Class 5 identity in student_profiles.
  */
 export async function selectStudentIdentity(
   studentId: string,
   characterId: CharacterId = 'sinta',
   pinCode?: string,
 ): Promise<{ ok: boolean; profile?: StudentProfile; message?: string }> {
+  if (!studentId) {
+    return { ok: false, message: 'Pilih nama siswamu terlebih dahulu.' };
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: studentRow, error } = await supabase
+        .from('student_profiles')
+        .select('id, auth_user_id, display_name, character, is_active, created_at')
+        .eq('id', studentId)
+        .maybeSingle();
+
+      if (!error && studentRow) {
+        const dbCharacter = mapCharacterIdToDbCharacter(
+          characterId || mapDbCharacterToCharacterId(studentRow.character),
+        );
+
+        // Update character column (never character_id or last_active_at)
+        await supabase
+          .from('student_profiles')
+          .update({ character: dbCharacter })
+          .eq('id', studentId);
+
+        const profile = mapDbRowToStudentProfile({
+          ...studentRow,
+          character: dbCharacter,
+        });
+
+        return {
+          ok: true,
+          profile,
+          message: `Selamat berpetualang, ${profile.name}!`,
+        };
+      }
+    } catch {
+      // Fallback to API
+    }
+  }
+
   try {
     const res = await fetch('/api/student/select-identity', {
       method: 'POST',
@@ -183,13 +523,14 @@ export async function selectStudentIdentity(
 }
 
 /**
- * Teacher Admin: Add Single Student to Class 5 Roster in Supabase.
+ * Teacher Admin: Add Single Student to Class 5 Roster in Supabase student_profiles.
+ * Uses only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
  */
 export async function adminAddSingleStudent(
   name: string,
   pinCode?: string,
   characterId: CharacterId = 'sinta',
-): Promise<{ ok: boolean; student?: any; message?: string }> {
+): Promise<{ ok: boolean; student?: StudentProfile; message?: string }> {
   const cleanedName = String(name || '').trim().replace(/\s+/g, ' ');
   if (cleanedName.length < 2) {
     return { ok: false, message: 'Nama siswa minimal 2 huruf.' };
@@ -198,39 +539,31 @@ export async function adminAddSingleStudent(
   if (isSupabaseConfigured && supabase) {
     try {
       const now = new Date().toISOString();
-      const normUsername = cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-      const newStudentId = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      const emptyProfile = createEmptyStudentProfile(newStudentId, cleanedName, characterId);
-
-      const { data: inserted, error: insertErr } = await supabase
-        .from('student_profiles')
-        .insert({
-          id: newStudentId,
-          auth_user_id: null,
-          name: cleanedName,
-          username: normUsername,
-          normalized_name: normUsername,
-          character_id: characterId,
-          solo_data: emptyProfile.solo,
-          championship_data: emptyProfile.championship,
-          created_at: now,
-          last_active_at: now,
-        })
-        .select()
-        .single();
+      const { data: inserted, error: insertErr } = await insertStudentProfileRowInSupabase({
+        displayName: cleanedName,
+        characterId,
+        createdAt: now,
+      });
 
       if (!insertErr && inserted) {
+        const mappedStudent = mapDbRowToStudentProfile(inserted);
         return {
           ok: true,
-          student: inserted,
-          message: `Siswa "${cleanedName}" berhasil ditambahkan ke Kelas 5!`,
+          student: mappedStudent,
+          message: `Siswa "${cleanedName}" (Karakter: ${mapCharacterIdToDbCharacter(characterId)}) berhasil ditambahkan ke Kelas 5!`,
         };
       }
       if (insertErr) {
-        return { ok: false, message: `Gagal menambahkan siswa ke Supabase: ${insertErr.message}` };
+        return {
+          ok: false,
+          message: `Gagal menambahkan siswa ke Supabase: ${insertErr.message}`,
+        };
       }
     } catch (e: any) {
-      return { ok: false, message: e?.message || 'Kesalahan saat menyimpan siswa ke Supabase.' };
+      return {
+        ok: false,
+        message: e?.message || 'Kesalahan saat menyimpan siswa ke Supabase.',
+      };
     }
   }
 
@@ -249,7 +582,11 @@ export async function adminAddSingleStudent(
     });
     const result = await res.json();
     if (res.ok && result.ok) {
-      return { ok: true, student: result.student, message: result.message };
+      return {
+        ok: true,
+        student: result.student ? mapDbRowToStudentProfile(result.student) : undefined,
+        message: result.message,
+      };
     }
     return { ok: false, message: result.message || 'Gagal menambahkan siswa.' };
   } catch (e: any) {
@@ -258,57 +595,91 @@ export async function adminAddSingleStudent(
 }
 
 /**
- * Teacher Admin: Add Bulk Batch Students to Class 5 Roster in Supabase.
+ * Teacher Admin: Add Bulk Batch Students to Class 5 Roster in Supabase student_profiles.
+ * Uses only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
  */
 export async function adminAddBatchStudents(
   names: string[],
   characterId: CharacterId = 'sinta',
-): Promise<{ ok: boolean; count?: number; message?: string }> {
+): Promise<{ ok: boolean; count?: number; students?: StudentProfile[]; message?: string }> {
   const validNames = (names || [])
     .map((rawName) => String(rawName).trim().replace(/\s+/g, ' '))
     .filter((n) => n.length >= 2);
 
   if (validNames.length === 0) {
-    return { ok: false, message: 'Daftar nama siswa tidak valid.' };
+    return { ok: false, message: 'Daftar nama siswa tidak valid (minimal 2 huruf per nama).' };
   }
 
   if (isSupabaseConfigured && supabase) {
     try {
       const now = new Date().toISOString();
-      const rowsToInsert = validNames.map((cleanedName, idx) => {
-        const normName = `${cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_')}_${idx}`;
-        const uid = `stu_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 5)}`;
-        const emptyProfile = createEmptyStudentProfile(uid, cleanedName, characterId);
-        return {
-          id: uid,
-          auth_user_id: null,
-          name: cleanedName,
-          username: normName,
-          normalized_name: normName,
-          character_id: characterId,
-          solo_data: emptyProfile.solo,
-          championship_data: emptyProfile.championship,
-          created_at: now,
-          last_active_at: now,
-        };
-      });
+      const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
+
+      // Build rows strictly matching public.student_profiles schema
+      const rowsToInsert: StudentProfileDbInsertPayload[] = [];
+      for (const cleanedName of validNames) {
+        const { authUserId } = await acquireIsolatedAnonymousAuthSession();
+        rowsToInsert.push(
+          buildStudentProfileInsertPayload({
+            authUserId,
+            displayName: cleanedName,
+            characterId,
+            isActive: true,
+            createdAt: now,
+          }),
+        );
+      }
 
       const { data: insertedList, error: insertErr } = await supabase
         .from('student_profiles')
         .insert(rowsToInsert)
-        .select();
+        .select(selectCols);
 
-      if (!insertErr) {
-        const count = insertedList?.length || rowsToInsert.length;
+      if (!insertErr && insertedList) {
+        const mappedList = insertedList.map((row) => mapDbRowToStudentProfile(row));
+        const count = mappedList.length || rowsToInsert.length;
         return {
           ok: true,
           count,
+          students: mappedList,
           message: `Berhasil menambahkan ${count} siswa baru ke Kelas 5!`,
         };
       }
-      return { ok: false, message: `Gagal menambah daftar siswa ke Supabase: ${insertErr.message}` };
+
+      // Fallback: insert one-by-one if bulk insert encountered an RLS/auth_user_id constraint
+      const insertedProfiles: StudentProfile[] = [];
+      let lastErrorMsg = insertErr?.message || '';
+      for (const cleanedName of validNames) {
+        const { data: singleInserted, error: singleErr } = await insertStudentProfileRowInSupabase({
+          displayName: cleanedName,
+          characterId,
+          createdAt: now,
+        });
+        if (!singleErr && singleInserted) {
+          insertedProfiles.push(mapDbRowToStudentProfile(singleInserted));
+        } else if (singleErr) {
+          lastErrorMsg = singleErr.message;
+        }
+      }
+
+      if (insertedProfiles.length > 0) {
+        return {
+          ok: true,
+          count: insertedProfiles.length,
+          students: insertedProfiles,
+          message: `Berhasil menambahkan ${insertedProfiles.length} siswa baru ke Kelas 5!`,
+        };
+      }
+
+      return {
+        ok: false,
+        message: `Gagal menambah daftar siswa ke Supabase: ${lastErrorMsg || 'Terjadi kendala izin tabel.'}`,
+      };
     } catch (e: any) {
-      return { ok: false, message: e?.message || 'Kesalahan saat menyimpan daftar siswa ke Supabase.' };
+      return {
+        ok: false,
+        message: e?.message || 'Kesalahan saat menyimpan daftar siswa ke Supabase.',
+      };
     }
   }
 
@@ -457,86 +828,60 @@ export async function resetStudentPasswordByTeacher(
 
 /**
  * 1. registerStudentProfile()
- * Registers or retrieves student profile in Supabase student_profiles table.
+ * Registers or retrieves student profile in Supabase student_profiles table
+ * using only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
  */
 export async function registerStudentProfile(
   name: string,
   characterId: CharacterId,
 ): Promise<{ profile: StudentProfile | null; error?: string }> {
-  const normName = normalizePlayerName(name);
+  const cleanedName = String(name || '').trim().replace(/\s+/g, ' ');
+  if (cleanedName.length < 2) {
+    return { profile: null, error: 'Nama siswa minimal 2 huruf.' };
+  }
 
   if (isSupabaseConfigured && supabase) {
     try {
-      // 1. Try Supabase Anonymous Auth if available
-      let authUserId: string | null = null;
-      try {
-        const { data: authData } = await supabase.auth.signInAnonymously();
-        if (authData?.user) {
-          authUserId = authData.user.id;
-        }
-      } catch {
-        // Anonymous auth optional/disabled
-      }
+      const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
 
-      // 2. Check if profile exists in Supabase by normalized_name
-      const { data: existing, error: selectErr } = await supabase
+      // 1. Check if profile already exists in Supabase by display_name (case-insensitive)
+      const { data: existingList, error: selectErr } = await supabase
         .from('student_profiles')
-        .select('*')
-        .eq('normalized_name', normName)
-        .maybeSingle();
+        .select(selectCols)
+        .ilike('display_name', cleanedName)
+        .limit(1);
 
-      const now = new Date().toISOString();
+      const existing = !selectErr && existingList && existingList.length > 0 ? existingList[0] : null;
 
-      if (!selectErr && existing) {
-        // Re-use existing profile! Prevent duplicates!
-        const updatedChar = characterId || existing.character_id || 'sinta';
+      if (existing) {
+        const resolvedCharId =
+          characterId || mapDbCharacterToCharacterId(existing.character) || 'sinta';
+        const dbChar = mapCharacterIdToDbCharacter(resolvedCharId);
 
         await supabase
           .from('student_profiles')
           .update({
-            character_id: updatedChar,
-            last_active_at: now,
-            ...(authUserId ? { auth_user_id: authUserId } : {}),
+            character: dbChar,
+            is_active: true,
           })
           .eq('id', existing.id);
 
-        const profile: StudentProfile = {
-          id: existing.id,
-          name: existing.name || name,
-          normalizedName: existing.normalized_name || normName,
-          characterId: updatedChar as CharacterId,
-          createdAt: existing.created_at || now,
-          lastActiveAt: now,
-          solo: existing.solo_data || createEmptyStudentProfile(existing.id, name, updatedChar as CharacterId).solo,
-          championship:
-            existing.championship_data ||
-            createEmptyStudentProfile(existing.id, name, updatedChar as CharacterId).championship,
-        };
+        const profile = mapDbRowToStudentProfile({
+          ...existing,
+          character: dbChar,
+        });
 
         return { profile };
       }
 
-      // 3. Create new student profile in Supabase
-      const newId = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      const emptyProfile = createEmptyStudentProfile(newId, name, characterId);
-
-      const { data: inserted, error: insertErr } = await supabase
-        .from('student_profiles')
-        .insert({
-          id: newId,
-          auth_user_id: authUserId,
-          name: name,
-          normalized_name: normName,
-          character_id: characterId,
-          created_at: emptyProfile.createdAt,
-          last_active_at: emptyProfile.lastActiveAt,
-          championship_data: null,
-        })
-        .select()
-        .single();
+      // 2. Insert new student profile in Supabase using exact schema columns
+      const { data: inserted, error: insertErr } = await insertStudentProfileRowInSupabase({
+        displayName: cleanedName,
+        characterId,
+      });
 
       if (!insertErr && inserted) {
-        return { profile: emptyProfile };
+        return { profile: mapDbRowToStudentProfile(inserted) };
       }
     } catch (e: any) {
       console.warn('Supabase registerStudentProfile network fallback:', e?.message);
@@ -548,30 +893,21 @@ export async function registerStudentProfile(
 
 /**
  * 2. getStudentProfile()
- * Fetches latest student profile from Supabase.
+ * Fetches latest student profile from Supabase student_profiles using valid columns.
  */
 export async function getStudentProfile(studentId: string): Promise<StudentProfile | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
+  if (!isSupabaseConfigured || !supabase || !isValidUuid(studentId)) return null;
 
   try {
     const { data, error } = await supabase
       .from('student_profiles')
-      .select('*')
+      .select('id, auth_user_id, display_name, character, is_active, created_at')
       .eq('id', studentId)
       .maybeSingle();
 
     if (error || !data) return null;
 
-    return {
-      id: data.id,
-      name: data.name,
-      normalizedName: data.normalized_name,
-      characterId: data.character_id as CharacterId,
-      createdAt: data.created_at,
-      lastActiveAt: data.last_active_at,
-      solo: data.solo_data || createEmptyStudentProfile(data.id, data.name, (data.character_id || 'sinta') as CharacterId).solo,
-      championship: data.championship_data || createEmptyStudentProfile(data.id, data.name, (data.character_id || 'sinta') as CharacterId).championship,
-    };
+    return mapDbRowToStudentProfile(data);
   } catch {
     return null;
   }
@@ -635,7 +971,6 @@ export async function saveGameAttempt(
       p_wrong_count: params.wrongCount,
       p_duration_seconds: params.durationSeconds,
       p_session_id: params.sessionId || null,
-      p_student_id: params.studentId,
     });
 
     if (!error) {
@@ -650,14 +985,13 @@ export async function saveGameAttempt(
 
     console.warn('save_game_attempt RPC call returned error, trying table direct fallback:', error.message);
 
-    // Fallback: direct table insert to game_attempts if RPC function not defined in Supabase
+    // Fallback: direct table insert to game_attempts using valid schema columns
     const { data: directInsert, error: directErr } = await supabase
       .from('game_attempts')
       .insert({
-        idempotency_key: key,
         student_id: params.studentId,
-        mode: params.mode,
-        championship_session_id: params.sessionId || null,
+        mode: p_mode,
+        session_id: params.sessionId || null,
         level_number: params.levelNumber,
         location_id: params.locationId,
         correct_count: params.correctCount,
@@ -740,7 +1074,7 @@ export async function getSoloBestScore(
         .from('game_attempts')
         .select('score')
         .eq('student_id', studentId)
-        .eq('mode', 'solo');
+        .in('mode', ['solo', 'SOLO']);
 
       if (locationId) {
         query = query.eq('location_id', locationId);
@@ -778,7 +1112,7 @@ export async function getSoloLatestScore(
         .from('game_attempts')
         .select('score')
         .eq('student_id', studentId)
-        .eq('mode', 'solo')
+        .in('mode', ['solo', 'SOLO'])
         .order('completed_at', { ascending: false })
         .limit(1);
 
@@ -838,7 +1172,8 @@ export async function getChampionshipScore(
 
 /**
  * 8. getTeacherDashboardData()
- * Fetches real aggregate data for the Teacher Dashboard from Supabase.
+ * Fetches real aggregate data for the Teacher Dashboard from Supabase student_profiles
+ * using only existing columns: id, auth_user_id, display_name, character, is_active, created_at.
  */
 export async function getTeacherDashboardData(): Promise<{
   students: StudentProfile[];
@@ -856,30 +1191,45 @@ export async function getTeacherDashboardData(): Promise<{
   }
 
   try {
-    const [studentsRes, attemptsRes, settingsRes] = await Promise.all([
-      supabase.from('student_profiles').select('*').order('created_at', { ascending: false }),
+    let localStudentsMap = new Map<string, StudentProfile>();
+    try {
+      const rawLocal = localStorage.getItem('aqua_math_students_v1');
+      if (rawLocal) {
+        const parsedLocal: StudentProfile[] = JSON.parse(rawLocal);
+        if (Array.isArray(parsedLocal)) {
+          parsedLocal.forEach((s) => {
+            if (s && s.id) localStudentsMap.set(s.id, s);
+            if (s && s.normalizedName) localStudentsMap.set(s.normalizedName, s);
+          });
+        }
+      }
+    } catch {
+      // ignore local storage read errors
+    }
+
+    const [studentsRes, attemptsRes] = await Promise.all([
+      supabase
+        .from('student_profiles')
+        .select('id, auth_user_id, display_name, character, is_active, created_at')
+        .order('created_at', { ascending: false }),
       supabase.from('game_attempts').select('id', { count: 'exact', head: true }),
-      supabase.from('class_settings').select('*').eq('id', 'default_class').maybeSingle(),
     ]);
 
-    const students: StudentProfile[] = (studentsRes.data || []).map((data) => ({
-      id: data.id,
-      name: data.name,
-      normalizedName: data.normalized_name,
-      characterId: data.character_id as CharacterId,
-      createdAt: data.created_at,
-      lastActiveAt: data.last_active_at,
-      solo: data.solo_data || createEmptyStudentProfile(data.id, data.name, (data.character_id || 'sinta') as CharacterId).solo,
-      championship: data.championship_data || createEmptyStudentProfile(data.id, data.name, (data.character_id || 'sinta') as CharacterId).championship,
-    }));
+    const students: StudentProfile[] = (studentsRes.data || [])
+      .filter((row) => row.is_active !== false)
+      .map((row) => {
+        const norm = normalizePlayerName(row.display_name || '');
+        const existingLocal = localStudentsMap.get(row.id) || localStudentsMap.get(norm);
+        return mapDbRowToStudentProfile(row, existingLocal);
+      });
 
     return {
       students,
       totalAttemptsCount: attemptsRes.count || 0,
-      classSettings: settingsRes.data || null,
-      supabaseConnected: true,
+      classSettings: null,
+      supabaseConnected: !studentsRes.error,
     };
-  } catch (e) {
+  } catch {
     return {
       students: [],
       totalAttemptsCount: 0,

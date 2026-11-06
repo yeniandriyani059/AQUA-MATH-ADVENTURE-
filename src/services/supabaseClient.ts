@@ -18,6 +18,23 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
 
+/**
+ * Creates an isolated, non-persisted Supabase client in memory.
+ * Used when attempting Supabase Anonymous Auth for student records so that an active
+ * Teacher Admin session in localStorage/sessionStorage is never overwritten or signed out.
+ */
+export function createEphemeralSupabaseClient(): SupabaseClient | null {
+  if (!isSupabaseConfigured) return null;
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: `aqua_ephemeral_stu_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    },
+  });
+}
+
 export const SUPABASE_SCHEMA_SQL = `-- AQUA MATH ADVENTURE - COMPLETE SUPABASE BACKEND SCHEMA & FUNCTIONS
 
 -- 1. Class Settings
@@ -67,16 +84,12 @@ USING (auth.uid() = auth_user_id);
 
 -- 3. Student Profiles
 CREATE TABLE IF NOT EXISTS student_profiles (
-  id TEXT PRIMARY KEY,
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   auth_user_id UUID,
-  name TEXT NOT NULL,
-  username TEXT UNIQUE,
-  normalized_name TEXT UNIQUE NOT NULL,
-  character_id TEXT NOT NULL,
-  solo_data JSONB NOT NULL DEFAULT '{}'::jsonb,
-  championship_data JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_active_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  display_name TEXT NOT NULL,
+  character TEXT NOT NULL CHECK (character IN ('BIMA', 'SINTA')),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- 4. Game Attempts (History of individual mission attempts)
@@ -164,8 +177,6 @@ BEGIN
     v_score,
     p_duration_seconds
   ) RETURNING id INTO v_attempt_id;
-  
-  UPDATE student_profiles SET last_active_at = now() WHERE id = p_student_id;
   
   RETURN v_attempt_id;
 END;

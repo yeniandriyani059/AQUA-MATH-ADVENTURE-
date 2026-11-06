@@ -37,6 +37,7 @@ import {
   resetAllChampionshipScores,
   resetToDemoSeedData,
   saveClassSettings,
+  saveStudents,
 } from '../services/gameStorage';
 import {
   adminAddBatchStudents,
@@ -44,13 +45,14 @@ import {
   adminDeleteStudent,
   flushOfflineSyncQueue,
   getTeacherDashboardData,
+  mapCharacterIdToDbCharacter,
   requestTeacherPasswordReset,
   resetStudentPasswordByTeacher,
   updateTeacherNewPassword,
   verifyTeacherRecoverySession,
 } from '../services/supabaseService';
 import { isSupabaseConfigured, SUPABASE_SCHEMA_SQL } from '../services/supabaseClient';
-import { ClassSettings, StudentProfile } from '../types/game';
+import { CharacterId, ClassSettings, StudentProfile } from '../types/game';
 import { soundManager } from '../utils/sound';
 import { AquaLogoSvg, CharacterAvatarSvg, MedalBadgeSvg } from './AquaLogoSvg';
 
@@ -136,7 +138,6 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     | 'assessments'
     | 'progress'
     | 'leaderboard'
-    | 'database'
     | 'accounts'
   >('monitoring');
 
@@ -144,6 +145,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [resetTargetStudent, setResetTargetStudent] = useState<StudentProfile | null>(null);
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [isResetting, setIsResetting] = useState(false);
+
+  // Student roster registration state (Tab 6)
+  const [addStudentFormMode, setAddStudentFormMode] = useState<'none' | 'single' | 'batch'>('none');
+  const [singleStudentNameInput, setSingleStudentNameInput] = useState('');
+  const [batchStudentNamesInput, setBatchStudentNamesInput] = useState('');
+  const [newStudentCharacter, setNewStudentCharacter] = useState<CharacterId>('sinta');
+  const [isAddingStudents, setIsAddingStudents] = useState(false);
+  const [studentFormError, setStudentFormError] = useState<string | null>(null);
+  const [deleteConfirmStudentId, setDeleteConfirmStudentId] = useState<string | null>(null);
 
   const [participantSearch, setParticipantSearch] = useState('');
   const [participantLevelFilter, setParticipantLevelFilter] = useState<number | 'all'>('all');
@@ -163,11 +173,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     setIsRefreshing(true);
     await flushOfflineSyncQueue().catch(() => {});
     const data = await getTeacherDashboardData();
-    if (data.students && data.students.length > 0) {
+    if (data.supabaseConnected) {
+      saveStudents(data.students);
       onUpdateStudents(data.students);
-      setStatusBanner(`Data berhasil disinkronkan dari database Supabase! (${data.students.length} siswa, ${data.totalAttemptsCount} riwayat percobaan).`);
-    } else if (data.supabaseConnected) {
-      setStatusBanner('Terhubung ke Supabase. Belum ada data siswa tersimpan.');
+      if (data.students.length > 0) {
+        setStatusBanner(
+          `Data berhasil disinkronkan dari database Supabase! (${data.students.length} siswa, ${data.totalAttemptsCount} riwayat percobaan).`,
+        );
+      } else {
+        setStatusBanner('Terhubung ke Supabase. Belum ada data siswa tersimpan.');
+      }
     }
     setIsRefreshing(false);
   };
@@ -853,18 +868,6 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('database')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${
-              activeTab === 'database'
-                ? 'bg-yellow-400 text-sky-950'
-                : 'bg-sky-900 text-cyan-100 hover:bg-sky-800'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span>6. Kelola Data & Supabase</span>
-          </button>
-          <button
-            type="button"
             onClick={() => setActiveTab('accounts')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${
               activeTab === 'accounts'
@@ -873,7 +876,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             }`}
           >
             <KeyRound className="w-3.5 h-3.5" />
-            <span>7. Akun Siswa & Reset Password</span>
+            <span>6. Akun Siswa & Reset Password</span>
           </button>
         </div>
 
@@ -1815,62 +1818,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
           )}
 
-          {/* TAB 5: DATA MANAGEMENT & SUPABASE INTEGRATION */}
-          {activeTab === 'database' && (
-            <div className="space-y-4">
-              <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs font-bold uppercase text-cyan-300">
-                    Status Penyimpanan Database
-                  </div>
-                  <h3 className="text-base font-bold font-['Fredoka'] text-white flex items-center gap-2 mt-0.5">
-                    <span
-                      className={`w-2.5 h-2.5 rounded-full ${
-                        isSupabaseConfigured ? 'bg-emerald-400' : 'bg-cyan-400'
-                      }`}
-                    />
-                    <span>
-                      {isSupabaseConfigured
-                        ? 'Terhubung ke Supabase Cloud Database'
-                        : 'Mode Simulasi Lokal (Local Demo Mode Aktif)'}
-                    </span>
-                  </h3>
-                  <p className="text-xs text-cyan-200 mt-1">
-                    Aplikasi siap dihubungkan ke Supabase kapan saja dengan mengisi{' '}
-                    <code className="text-yellow-300">VITE_SUPABASE_URL</code> dan{' '}
-                    <code className="text-yellow-300">VITE_SUPABASE_ANON_KEY</code> tanpa mengubah
-                    kode permainan.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundManager.playClick();
-                    const { settings: s } = resetToDemoSeedData();
-                    onUpdateSettings(s);
-                    onUpdateStudents([]);
-                    setStatusBanner('Cache siswa lokal berhasil dibersihkan! Silakan tekan "Sinkron Data" untuk memuat data dari Supabase.');
-                  }}
-                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-bold text-xs cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>Bersihkan Cache Siswa Lokal</span>
-                </button>
-              </div>
-
-              <div className="bg-sky-950 border border-cyan-500/40 rounded-2xl p-4">
-                <div className="text-xs font-bold text-yellow-300 mb-2">
-                  Skema Tabel SQL Supabase (Siap Pakai untuk Produksi / Netlify):
-                </div>
-                <pre className="p-3 rounded-xl bg-slate-950 text-cyan-200 font-mono text-xs overflow-x-auto">
-                  {SUPABASE_SCHEMA_SQL}
-                </pre>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 7: KELOLA ROSTER SISWA KELAS 5 */}
+          {/* TAB 6: KELOLA ROSTER SISWA KELAS 5 */}
           {activeTab === 'accounts' && (
             <div className="space-y-4">
               <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
@@ -1880,7 +1828,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <span>Daftar Roster & Kelola Siswa Kelas 5</span>
                   </h3>
                   <p className="text-xs text-cyan-200 mt-0.5">
-                    Guru dapat menambahkan siswa satu per satu, menempelkan daftar banyak siswa, mengedit PIN, dan mengelola daftar siswa Kelas 5.
+                    Guru dapat menambahkan siswa satu per satu, menempelkan daftar banyak siswa, memilih karakter (BIMA / SINTA), dan mengelola daftar siswa Kelas 5.
                   </p>
                 </div>
 
@@ -1889,20 +1837,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     type="button"
                     onClick={() => {
                       soundManager.playClick();
-                      const rawName = prompt('Masukkan Nama Lengkap Siswa Kelas 5 Baru:');
-                      if (rawName && rawName.trim().length >= 2) {
-                        const pin = prompt('Masukkan 4 Angka PIN Siswa (Opsional / Kosongkan jika tidak ada):');
-                        adminAddSingleStudent(rawName, pin || undefined).then((res) => {
-                          if (res.ok) {
-                            loadRealSupabaseData();
-                            setStatusBanner(res.message || `Siswa ${rawName} berhasil ditambahkan!`);
-                          } else {
-                            alert(res.message || 'Gagal menambahkan siswa.');
-                          }
-                        });
-                      }
+                      setStudentFormError(null);
+                      setAddStudentFormMode((prev) => (prev === 'single' ? 'none' : 'single'));
                     }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs border border-white cursor-pointer shadow-md"
+                    className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-['Fredoka'] font-bold text-xs border cursor-pointer shadow-md ${
+                      addStudentFormMode === 'single'
+                        ? 'bg-yellow-300 text-sky-950 border-yellow-100 ring-2 ring-yellow-300'
+                        : 'bg-yellow-400 hover:bg-yellow-300 text-sky-950 border-white'
+                    }`}
                   >
                     <UserPlus className="w-4 h-4 stroke-[2.5]" />
                     <span>+ Tambah 1 Siswa</span>
@@ -1912,27 +1854,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     type="button"
                     onClick={() => {
                       soundManager.playClick();
-                      const rawList = prompt(
-                        'Tempelkan daftar nama siswa Kelas 5 (satu nama per baris):\nContoh:\nAhmad Rizky\nSiti Aminah\nBudi Santoso',
-                      );
-                      if (rawList && rawList.trim()) {
-                        const names = rawList
-                          .split('\n')
-                          .map((n) => n.trim())
-                          .filter((n) => n.length >= 2);
-                        if (names.length > 0) {
-                          adminAddBatchStudents(names).then((res) => {
-                            if (res.ok) {
-                              loadRealSupabaseData();
-                              setStatusBanner(res.message || `Berhasil menambahkan ${names.length} siswa baru!`);
-                            } else {
-                              alert(res.message || 'Gagal menambah daftar siswa.');
-                            }
-                          });
-                        }
-                      }
+                      setStudentFormError(null);
+                      setAddStudentFormMode((prev) => (prev === 'batch' ? 'none' : 'batch'));
                     }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-sky-950 font-['Fredoka'] font-bold text-xs border border-white cursor-pointer shadow-md"
+                    className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-['Fredoka'] font-bold text-xs border cursor-pointer shadow-md ${
+                      addStudentFormMode === 'batch'
+                        ? 'bg-cyan-300 text-sky-950 border-cyan-100 ring-2 ring-cyan-300'
+                        : 'bg-cyan-400 hover:bg-cyan-300 text-sky-950 border-white'
+                    }`}
                   >
                     <Users className="w-4 h-4 stroke-[2.5]" />
                     <span>+ Tempel Banyak Nama (Batch)</span>
@@ -1950,6 +1879,239 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* INLINE FORM: TAMBAH 1 SISWA ATAU BATCH SISWA */}
+              {addStudentFormMode !== 'none' && (
+                <div className="bg-sky-950 border-2 border-yellow-400/80 rounded-2xl p-4 sm:p-5 space-y-4 shadow-xl">
+                  <div className="flex items-center justify-between border-b border-cyan-500/30 pb-2.5">
+                    <h4 className="font-['Fredoka'] font-bold text-sm sm:text-base text-white flex items-center gap-2">
+                      {addStudentFormMode === 'single' ? (
+                        <>
+                          <UserPlus className="w-4 h-4 text-yellow-300" />
+                          <span>Tambah 1 Siswa Kelas 5 Baru</span>
+                        </>
+                      ) : (
+                        <>
+                          <Users className="w-4 h-4 text-cyan-300" />
+                          <span>Tempel Daftar Banyak Siswa (Batch)</span>
+                        </>
+                      )}
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundManager.playClick();
+                        setAddStudentFormMode('none');
+                        setStudentFormError(null);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-sky-800 hover:bg-sky-700 text-cyan-200 text-xs font-bold cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                  </div>
+
+                  {studentFormError && (
+                    <div
+                      role="alert"
+                      className="p-3 rounded-xl bg-rose-950 border border-rose-400 text-rose-100 text-xs font-semibold flex items-center gap-2"
+                    >
+                      <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0" />
+                      <span>{studentFormError}</span>
+                    </div>
+                  )}
+
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      soundManager.playClick();
+                      setStudentFormError(null);
+
+                      if (addStudentFormMode === 'single') {
+                        const cleaned = singleStudentNameInput.trim().replace(/\s+/g, ' ');
+                        if (cleaned.length < 2) {
+                          setStudentFormError('Nama lengkap siswa minimal 2 huruf.');
+                          return;
+                        }
+                        setIsAddingStudents(true);
+                        try {
+                          const res = await adminAddSingleStudent(
+                            cleaned,
+                            undefined,
+                            newStudentCharacter,
+                          );
+                          if (res.ok) {
+                            if (res.student) {
+                              const nextList = [
+                                res.student,
+                                ...students.filter((s) => s.id !== res.student!.id),
+                              ];
+                              saveStudents(nextList);
+                              onUpdateStudents(nextList);
+                            }
+                            setSingleStudentNameInput('');
+                            setAddStudentFormMode('none');
+                            setStatusBanner(
+                              res.message ||
+                                `Siswa "${cleaned}" (${mapCharacterIdToDbCharacter(newStudentCharacter)}) berhasil ditambahkan!`,
+                            );
+                            await loadRealSupabaseData();
+                          } else {
+                            setStudentFormError(res.message || 'Gagal menambahkan siswa.');
+                          }
+                        } catch (err: any) {
+                          setStudentFormError(err?.message || 'Gagal menambahkan siswa.');
+                        } finally {
+                          setIsAddingStudents(false);
+                        }
+                      } else {
+                        const names = batchStudentNamesInput
+                          .split('\n')
+                          .map((n) => n.trim().replace(/\s+/g, ' '))
+                          .filter((n) => n.length >= 2);
+                        if (names.length === 0) {
+                          setStudentFormError(
+                            'Masukkan minimal 1 nama siswa yang valid (minimal 2 huruf per baris).',
+                          );
+                          return;
+                        }
+                        setIsAddingStudents(true);
+                        try {
+                          const res = await adminAddBatchStudents(names, newStudentCharacter);
+                          if (res.ok) {
+                            if (res.students && res.students.length > 0) {
+                              const newIds = new Set(res.students.map((s) => s.id));
+                              const nextList = [
+                                ...res.students,
+                                ...students.filter((s) => !newIds.has(s.id)),
+                              ];
+                              saveStudents(nextList);
+                              onUpdateStudents(nextList);
+                            }
+                            setBatchStudentNamesInput('');
+                            setAddStudentFormMode('none');
+                            setStatusBanner(
+                              res.message || `Berhasil menambahkan ${names.length} siswa baru!`,
+                            );
+                            await loadRealSupabaseData();
+                          } else {
+                            setStudentFormError(res.message || 'Gagal menambah daftar siswa.');
+                          }
+                        } catch (err: any) {
+                          setStudentFormError(err?.message || 'Gagal menambah daftar siswa.');
+                        } finally {
+                          setIsAddingStudents(false);
+                        }
+                      }
+                    }}
+                    className="space-y-4"
+                  >
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        {addStudentFormMode === 'single' ? (
+                          <div>
+                            <label
+                              htmlFor="single-student-name"
+                              className="block text-xs font-bold text-cyan-100 mb-1.5"
+                            >
+                              Nama Lengkap Siswa Kelas 5 (display_name):
+                            </label>
+                            <input
+                              id="single-student-name"
+                              type="text"
+                              required
+                              value={singleStudentNameInput}
+                              onChange={(e) => setSingleStudentNameInput(e.target.value)}
+                              placeholder="Contoh: Ahmad Rizky Pratama"
+                              className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border-2 border-cyan-400/60 text-white text-xs sm:text-sm font-bold focus:outline-none focus:border-yellow-400"
+                            />
+                          </div>
+                        ) : (
+                          <div>
+                            <label
+                              htmlFor="batch-student-names"
+                              className="block text-xs font-bold text-cyan-100 mb-1.5"
+                            >
+                              Daftar Nama Siswa (Satu Nama per Baris):
+                            </label>
+                            <textarea
+                              id="batch-student-names"
+                              rows={4}
+                              required
+                              value={batchStudentNamesInput}
+                              onChange={(e) => setBatchStudentNamesInput(e.target.value)}
+                              placeholder={'Ahmad Rizky\nSiti Aminah\nBudi Santoso'}
+                              className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border-2 border-cyan-400/60 text-white text-xs sm:text-sm font-bold focus:outline-none focus:border-yellow-400"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-cyan-100 mb-1.5">
+                          Pilih Karakter Siswa (character: BIMA / SINTA):
+                        </label>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          {CHARACTERS.map((char) => {
+                            const isSelected = newStudentCharacter === char.id;
+                            const dbCharCode = mapCharacterIdToDbCharacter(char.id);
+                            return (
+                              <button
+                                key={char.id}
+                                type="button"
+                                onClick={() => {
+                                  soundManager.playClick();
+                                  setNewStudentCharacter(char.id);
+                                }}
+                                className={`p-2.5 rounded-xl border-2 flex items-center gap-2.5 cursor-pointer transition-all ${
+                                  isSelected
+                                    ? 'bg-sky-800 border-yellow-400 shadow-md'
+                                    : 'bg-sky-900/60 border-cyan-500/30 hover:border-cyan-400'
+                                }`}
+                              >
+                                <CharacterAvatarSvg
+                                  characterId={char.id}
+                                  className="w-9 h-9 shrink-0"
+                                />
+                                <div className="text-left leading-tight">
+                                  <div className="font-['Fredoka'] font-bold text-xs text-white">
+                                    {char.name} ({dbCharCode})
+                                  </div>
+                                  <div className="text-[10px] text-cyan-300">{char.roleTitle}</div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundManager.playClick();
+                          setAddStudentFormMode('none');
+                          setStudentFormError(null);
+                        }}
+                        className="px-4 py-2 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-100 text-xs font-bold cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isAddingStudents}
+                        className="px-5 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-xs sm:text-sm border border-white shadow-md cursor-pointer disabled:opacity-50"
+                      >
+                        {isAddingStudents
+                          ? 'Menyimpan ke Supabase...'
+                          : addStudentFormMode === 'single'
+                            ? 'Simpan Siswa ke Kelas'
+                            : 'Simpan Daftar Siswa'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
 
               {students.length === 0 ? (
                 <div className="bg-sky-950 border-2 border-dashed border-cyan-500/40 rounded-3xl p-8 text-center space-y-3">
@@ -1999,8 +2161,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                     characterId={student.characterId}
                                     className="w-8 h-8 shrink-0"
                                   />
-                                  <span className="font-bold text-white capitalize">
-                                    {CHARACTERS.find((c) => c.id === student.characterId)?.name}
+                                  <span className="font-bold text-white">
+                                    {CHARACTERS.find((c) => c.id === student.characterId)?.name} (
+                                    {mapCharacterIdToDbCharacter(student.characterId)})
                                   </span>
                                 </div>
                               </td>
@@ -2017,25 +2180,52 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               </td>
                               <td className="py-3 px-4 text-center">
                                 <div className="flex items-center justify-center gap-1.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      soundManager.playClick();
-                                      if (confirm(`Hapus siswa "${student.name}" dari Kelas 5?`)) {
-                                        adminDeleteStudent(student.id).then((res) => {
-                                          if (res.ok) {
-                                            loadRealSupabaseData();
-                                            setStatusBanner(`Siswa "${student.name}" berhasil dihapus.`);
-                                          } else {
-                                            alert(res.message || 'Gagal menghapus siswa.');
-                                          }
-                                        });
-                                      }
-                                    }}
-                                    className="px-2.5 py-1 rounded-lg bg-rose-950 hover:bg-rose-900 border border-rose-400/80 text-rose-200 text-xs font-bold cursor-pointer"
-                                  >
-                                    Hapus
-                                  </button>
+                                  {deleteConfirmStudentId === student.id ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          soundManager.playClick();
+                                          setDeleteConfirmStudentId(null);
+                                          adminDeleteStudent(student.id).then((res) => {
+                                            if (res.ok) {
+                                              const next = deleteStudentProfile(student.id);
+                                              onUpdateStudents(next);
+                                              loadRealSupabaseData();
+                                              setStatusBanner(
+                                                `Siswa "${student.name}" berhasil dihapus.`,
+                                              );
+                                            } else {
+                                              setStatusBanner(
+                                                res.message || 'Gagal menghapus siswa.',
+                                              );
+                                            }
+                                          });
+                                        }}
+                                        className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
+                                      >
+                                        Ya, Hapus
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setDeleteConfirmStudentId(null)}
+                                        className="px-2 py-1 rounded-lg bg-sky-800 hover:bg-sky-700 text-cyan-100 text-xs font-bold cursor-pointer"
+                                      >
+                                        Batal
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        soundManager.playClick();
+                                        setDeleteConfirmStudentId(student.id);
+                                      }}
+                                      className="px-2.5 py-1 rounded-lg bg-rose-950 hover:bg-rose-900 border border-rose-400/80 text-rose-200 text-xs font-bold cursor-pointer"
+                                    >
+                                      Hapus
+                                    </button>
+                                  )}
                                 </div>
                               </td>
                             </tr>

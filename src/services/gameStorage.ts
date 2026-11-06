@@ -14,6 +14,9 @@ import {
 } from '../types/game';
 import { isSupabaseConfigured, supabase } from './supabaseClient';
 import {
+  generateStudentUuid,
+  isValidUuid,
+  mapCharacterIdToDbCharacter,
   registerStudentProfile,
   saveGameAttempt,
 } from './supabaseService';
@@ -84,22 +87,6 @@ export function saveClassSettings(next: ClassSettings): ClassSettings {
   } catch {
     // ignore storage quota errors
   }
-  if (isSupabaseConfigured && supabase) {
-    supabase
-      .from('class_settings')
-      .upsert({
-        id: 'default_class',
-        access_code: updated.accessCode,
-        access_code_active: updated.accessCodeActive,
-        solo_adventure_open: updated.soloAdventureOpen,
-        championship_open: updated.championshipOpen,
-        championship_session_name: updated.championshipSessionName,
-        teacher_name: updated.teacherName,
-        class_name: updated.className,
-        updated_at: updated.updatedAt,
-      })
-      .then(() => {});
-  }
   return updated;
 }
 
@@ -159,7 +146,7 @@ export function registerOrUpdateStudent(
   }
 
   const newProfile = createEmptyStudentProfile(
-    `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    generateStudentUuid(),
     name,
     characterId,
   );
@@ -197,18 +184,15 @@ export function recordMissionCompletion(
   students[idx] = updatedProfile;
   saveStudents(students);
 
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseConfigured && supabase && isValidUuid(updatedProfile.id)) {
     supabase
       .from('student_profiles')
-      .upsert({
-        id: updatedProfile.id,
-        name: updatedProfile.name,
-        normalized_name: updatedProfile.normalizedName,
-        character_id: updatedProfile.characterId,
-        solo_data: updatedProfile.solo,
-        championship_data: updatedProfile.championship,
-        last_active_at: updatedProfile.lastActiveAt,
+      .update({
+        display_name: updatedProfile.name,
+        character: mapCharacterIdToDbCharacter(updatedProfile.characterId),
+        is_active: true,
       })
+      .eq('id', updatedProfile.id)
       .then(() => {});
   }
 

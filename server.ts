@@ -318,6 +318,14 @@ async function getSupabaseClient() {
   return null;
 }
 
+function toDbCharacter(raw?: string | null): 'BIMA' | 'SINTA' {
+  return String(raw || '').trim().toUpperCase() === 'BIMA' ? 'BIMA' : 'SINTA';
+}
+
+function fromDbCharacter(raw?: string | null): 'bima' | 'sinta' {
+  return String(raw || '').trim().toUpperCase() === 'BIMA' ? 'bima' : 'sinta';
+}
+
 // Server-side access code verification & Class 5 Roster List for students
 app.post('/api/student/verify-access', async (req, res) => {
   const { accessCode } = req.body || {};
@@ -327,44 +335,35 @@ app.post('/api/student/verify-access', async (req, res) => {
   }
 
   const cleanedCode = String(accessCode).trim().toUpperCase();
+  const validCode = (process.env.DEFAULT_CLASS_ACCESS_CODE || 'AQUA2026').trim().toUpperCase();
   const sb = await getSupabaseClient();
 
   if (sb) {
     try {
-      const { data, error } = await sb
-        .from('class_settings')
-        .select('*')
-        .eq('id', 'default_class')
-        .maybeSingle();
-
-      const validCode = data?.access_code
-        ? data.access_code.trim().toUpperCase()
-        : (process.env.DEFAULT_CLASS_ACCESS_CODE || 'AQUA2026').trim().toUpperCase();
-
-      if (data && !data.access_code_active) {
-        res.status(403).json({ ok: false, message: 'Kode Akses Kelas sedang ditutup oleh Guru.' });
-        return;
-      }
-
       if (cleanedCode === validCode) {
-        // Fetch enrolled Class 5 student roster list from student_profiles
-        const { data: roster, error: rosterErr } = await sb
+        // Fetch enrolled Class 5 student roster list from student_profiles using valid schema columns
+        const { data: roster } = await sb
           .from('student_profiles')
-          .select('id, name, username, character_id, pin_code')
-          .order('name', { ascending: true });
+          .select('id, auth_user_id, display_name, character, is_active, created_at')
+          .eq('is_active', true)
+          .order('display_name', { ascending: true });
 
-        const students = (roster || []).map((s) => ({
-          id: s.id,
-          name: s.name,
-          username: s.username || s.id,
-          characterId: s.character_id || 'sinta',
-          hasPin: Boolean(s.pin_code),
-        }));
+        const students = (roster || []).map((s) => {
+          const displayName = String(s.display_name || 'Siswa').trim();
+          const norm = displayName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+          return {
+            id: s.id,
+            name: displayName,
+            username: norm || s.id,
+            characterId: fromDbCharacter(s.character),
+            hasPin: false,
+          };
+        });
 
         res.json({
           ok: true,
-          className: data?.class_name || 'Kelas 5 SD',
-          teacherName: data?.teacher_name || 'Ibu/Bapak Guru Kelas 5',
+          className: 'Kelas Petualang Aqua City',
+          teacherName: 'Ibu/Bapak Guru Kelas 5',
           students,
         });
         return;
@@ -377,8 +376,7 @@ app.post('/api/student/verify-access', async (req, res) => {
     }
   }
 
-  const defaultCode = (process.env.DEFAULT_CLASS_ACCESS_CODE || 'AQUA2026').trim().toUpperCase();
-  if (cleanedCode === defaultCode) {
+  if (cleanedCode === validCode) {
     res.json({
       ok: true,
       className: 'Kelas 5 SD',
@@ -392,7 +390,7 @@ app.post('/api/student/verify-access', async (req, res) => {
 
 // Student Identity Selection (No email/password account required!)
 app.post('/api/student/select-identity', async (req, res) => {
-  const { studentId, characterId, pinCode } = req.body || {};
+  const { studentId, characterId } = req.body || {};
 
   if (!studentId) {
     res.status(400).json({ ok: false, message: 'Pilih nama siswamu terlebih dahulu.' });
@@ -404,7 +402,7 @@ app.post('/api/student/select-identity', async (req, res) => {
     try {
       const { data: studentRow, error } = await sb
         .from('student_profiles')
-        .select('*')
+        .select('id, auth_user_id, display_name, character, is_active, created_at')
         .eq('id', studentId)
         .maybeSingle();
 
@@ -413,37 +411,30 @@ app.post('/api/student/select-identity', async (req, res) => {
         return;
       }
 
-      // Verify optional student PIN code if set
-      if (studentRow.pin_code && String(studentRow.pin_code).trim() !== '') {
-        const expectedPin = String(studentRow.pin_code).trim();
-        const providedPin = String(pinCode || '').trim();
-        if (providedPin !== expectedPin) {
-          res.status(401).json({ ok: false, message: 'PIN Siswa tidak cocok. Silakan minta bantuan Guru!' });
-          return;
-        }
-      }
-
       const now = new Date().toISOString();
-      const updatedChar = characterId || studentRow.character_id || 'sinta';
+      const dbChar = toDbCharacter(characterId || studentRow.character);
+      const frontendChar = fromDbCharacter(dbChar);
+      const displayName = String(studentRow.display_name || 'Siswa').trim();
+      const normName = displayName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
       await sb
         .from('student_profiles')
-        .update({ character_id: updatedChar, last_active_at: now })
+        .update({ character: dbChar })
         .eq('id', studentId);
 
-      const initialSolo = { unlockedLevel: 1, academicGrade: 'A', bestTotalScore: 0, latestTotalScore: 0, locations: {} };
-      const initialChampionship = { unlockedLevel: 1, academicGrade: 'A', totalChampionshipScore: 0, locations: {} };
+      const initialSolo = { unlockedLevel: 1, academicGrade: 0, bestTotalScore: 0, latestTotalScore: 0, completedLevels: [], locations: {} };
+      const initialChampionship = { unlockedLevel: 1, academicGrade: 0, totalChampionshipScore: 0, totalTimeSeconds: 0, completedLevels: [], locations: {} };
 
       const profile = {
         id: studentRow.id,
-        name: studentRow.name,
-        username: studentRow.username || studentRow.normalized_name,
-        normalizedName: studentRow.normalized_name,
-        characterId: updatedChar,
+        name: displayName,
+        username: normName,
+        normalizedName: normName,
+        characterId: frontendChar,
         createdAt: studentRow.created_at || now,
         lastActiveAt: now,
-        solo: studentRow.solo_data || initialSolo,
-        championship: studentRow.championship_data || initialChampionship,
+        solo: initialSolo,
+        championship: initialChampionship,
       };
 
       res.json({ ok: true, profile, message: `Selamat berpetualang, ${profile.name}!` });
@@ -473,7 +464,7 @@ app.get('/api/admin/students', async (req, res) => {
     try {
       const { data, error } = await sb
         .from('student_profiles')
-        .select('*')
+        .select('id, auth_user_id, display_name, character, is_active, created_at')
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -503,7 +494,7 @@ app.post('/api/admin/students', async (req, res) => {
     return;
   }
 
-  const { name, names, characterId, pinCode } = req.body || {};
+  const { name, names, characterId } = req.body || {};
   const sb = await getSupabaseClient();
 
   if (!sb) {
@@ -513,30 +504,22 @@ app.post('/api/admin/students', async (req, res) => {
 
   try {
     const now = new Date().toISOString();
-    const initialSolo = { unlockedLevel: 1, academicGrade: 'A', bestTotalScore: 0, latestTotalScore: 0, locations: {} };
-    const initialChampionship = { unlockedLevel: 1, academicGrade: 'A', totalChampionshipScore: 0, locations: {} };
+    const dbChar = toDbCharacter(characterId);
+    const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
 
     // Batch insertion if multiple names provided
     if (Array.isArray(names) && names.length > 0) {
       const rowsToInsert = names
         .map((rawName) => String(rawName).trim().replace(/\s+/g, ' '))
         .filter((n) => n.length >= 2)
-        .map((cleanedName) => {
-          const normName = cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-          const uid = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          return {
-            id: uid,
-            auth_user_id: null,
-            name: cleanedName,
-            username: normName,
-            normalized_name: normName,
-            character_id: characterId || 'sinta',
-            solo_data: initialSolo,
-            championship_data: initialChampionship,
-            created_at: now,
-            last_active_at: now,
-          };
-        });
+        .map((cleanedName) => ({
+          id: crypto.randomUUID(),
+          auth_user_id: null,
+          display_name: cleanedName,
+          character: dbChar,
+          is_active: true,
+          created_at: now,
+        }));
 
       if (rowsToInsert.length === 0) {
         res.status(400).json({ ok: false, message: 'Daftar nama siswa tidak valid.' });
@@ -546,7 +529,7 @@ app.post('/api/admin/students', async (req, res) => {
       const { data: insertedList, error: insertErr } = await sb
         .from('student_profiles')
         .insert(rowsToInsert)
-        .select();
+        .select(selectCols);
 
       if (insertErr) {
         res.status(500).json({ ok: false, message: `Gagal menambah daftar siswa: ${insertErr.message}` });
@@ -556,6 +539,7 @@ app.post('/api/admin/students', async (req, res) => {
       res.json({
         ok: true,
         count: insertedList?.length || rowsToInsert.length,
+        students: insertedList || rowsToInsert,
         message: `Berhasil menambahkan ${insertedList?.length || rowsToInsert.length} siswa baru ke Kelas 5!`,
       });
       return;
@@ -568,25 +552,19 @@ app.post('/api/admin/students', async (req, res) => {
     }
 
     const cleanedName = String(name).trim().replace(/\s+/g, ' ');
-    const normUsername = cleanedName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    const newStudentId = `stu_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const newStudentId = crypto.randomUUID();
 
     const { data: inserted, error: insertErr } = await sb
       .from('student_profiles')
       .insert({
         id: newStudentId,
         auth_user_id: null,
-        name: cleanedName,
-        username: normUsername,
-        normalized_name: normUsername,
-        character_id: characterId || 'sinta',
-        pin_code: pinCode ? String(pinCode).trim() : null,
-        solo_data: initialSolo,
-        championship_data: initialChampionship,
+        display_name: cleanedName,
+        character: dbChar,
+        is_active: true,
         created_at: now,
-        last_active_at: now,
       })
-      .select()
+      .select(selectCols)
       .single();
 
     if (insertErr) {
@@ -597,7 +575,7 @@ app.post('/api/admin/students', async (req, res) => {
     res.json({
       ok: true,
       student: inserted,
-      message: `Siswa "${cleanedName}" berhasil ditambahkan ke Kelas 5!`,
+      message: `Siswa "${cleanedName}" (${dbChar}) berhasil ditambahkan ke Kelas 5!`,
     });
     return;
   } catch (e: any) {
@@ -606,7 +584,7 @@ app.post('/api/admin/students', async (req, res) => {
   }
 });
 
-// Teacher Admin: Update Student Name / PIN
+// Teacher Admin: Update Student Name / Character
 app.put('/api/admin/students/:id', async (req, res) => {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -618,7 +596,7 @@ app.put('/api/admin/students/:id', async (req, res) => {
   }
 
   const { id } = req.params;
-  const { name, pinCode, characterId } = req.body || {};
+  const { name, characterId, isActive } = req.body || {};
   const sb = await getSupabaseClient();
 
   if (!sb) {
@@ -627,23 +605,22 @@ app.put('/api/admin/students/:id', async (req, res) => {
   }
 
   try {
-    const updatePayload: Record<string, any> = { last_active_at: new Date().toISOString() };
+    const updatePayload: Record<string, any> = {};
     if (name) {
-      updatePayload.name = String(name).trim().replace(/\s+/g, ' ');
-      updatePayload.normalized_name = String(name).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    }
-    if (pinCode !== undefined) {
-      updatePayload.pin_code = pinCode ? String(pinCode).trim() : null;
+      updatePayload.display_name = String(name).trim().replace(/\s+/g, ' ');
     }
     if (characterId) {
-      updatePayload.character_id = characterId;
+      updatePayload.character = toDbCharacter(characterId);
+    }
+    if (isActive !== undefined) {
+      updatePayload.is_active = Boolean(isActive);
     }
 
     const { data: updated, error } = await sb
       .from('student_profiles')
       .update(updatePayload)
       .eq('id', id)
-      .select()
+      .select('id, auth_user_id, display_name, character, is_active, created_at')
       .maybeSingle();
 
     if (error) {
@@ -710,14 +687,13 @@ app.post('/api/student/save-attempt', async (req, res) => {
 
   try {
     const score = Math.min(100, Math.max(0, Number(correctCount || 0) * 10));
-    const now = new Date().toISOString();
 
-    const { data: attempt, error: attemptErr } = await sb
+    const { data: attempt } = await sb
       .from('game_attempts')
       .insert({
         student_id: studentId,
-        mode: mode === 'championship' ? 'championship' : 'solo',
-        championship_session_id: sessionId || null,
+        mode: mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO',
+        session_id: sessionId || null,
         level_number: Number(levelNumber || Math.ceil(locationId / 2)),
         location_id: Number(locationId),
         correct_count: Number(correctCount || 0),
@@ -727,8 +703,6 @@ app.post('/api/student/save-attempt', async (req, res) => {
       })
       .select()
       .maybeSingle();
-
-    await sb.from('student_profiles').update({ last_active_at: now }).eq('id', studentId);
 
     res.json({
       ok: true,
