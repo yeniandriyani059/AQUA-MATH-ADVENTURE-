@@ -1,3 +1,4 @@
+import { readResultRows } from './authoritativeResults';
 import { parseGameMode, validSessionId } from './championshipContract';
 import { createAttemptSync } from './attemptSync';
 import { getTeacherAccessToken } from './teacherSession';
@@ -545,13 +546,13 @@ export async function getActiveChampionshipSession(): Promise<{ id: string; sess
   try {
     const { data, error } = await client
       .from('championship_sessions')
-      .select('id, session_name, is_active, created_at')
-      .eq('is_active', true)
+      .select('id, session_name, status, created_at')
+      .eq('status', 'OPEN')
       .order('created_at', { ascending: false })
       .limit(2)
       .maybeSingle();
 
-    if (!error && data && validSessionId(data.id)) {
+    if (!error && data?.status === 'OPEN' && validSessionId(data.id)) {
       try {
         localStorage.setItem('aqua_math_active_championship_session_id', String(data.id));
       } catch {
@@ -585,8 +586,8 @@ export async function ensureActiveChampionshipSession(
   try {
     const { data: existing, error: selectErr } = await supabase
       .from('championship_sessions')
-      .select('id, session_name, is_active, created_at')
-      .eq('is_active', true)
+      .select('id, session_name, status, created_at')
+      .eq('status', 'OPEN')
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -602,14 +603,14 @@ export async function ensureActiveChampionshipSession(
 
     const payload = {
       session_name: sessionName || 'Turnamen Penyelamat Air Aqua City',
-      is_active: true,
+      status: 'OPEN',
       created_by: teacherCheck.teacherUserId,
     };
 
     const { data: inserted, error: insertErr } = await supabase
       .from('championship_sessions')
       .insert(payload)
-      .select('id, session_name, is_active')
+      .select('id, session_name, status')
       .single();
 
     if (!insertErr && inserted && inserted.id) {
@@ -637,8 +638,8 @@ export async function ensureActiveChampionshipSession(
 export function applySupabaseAttemptsAndProgressToProfile(
   baseProfile: StudentProfile,
   attemptsRows: any[],
-  progressRows: any[] = [],
-  championshipSnapshot?: any,
+  _progressRows: any[] = [],
+  _championshipSnapshot?: any,
 ): StudentProfile {
   const empty = createEmptyStudentProfile(
     baseProfile.id,
@@ -651,25 +652,9 @@ export function applySupabaseAttemptsAndProgressToProfile(
     championship: empty.championship,
   };
 
-  const effectiveAttempts =
-    Array.isArray(attemptsRows) && attemptsRows.length > 0
-      ? attemptsRows
-      : Array.isArray(championshipSnapshot?.verifiedAttempts)
-        ? championshipSnapshot.verifiedAttempts
-        : [];
-
-  const effectiveProgress =
-    Array.isArray(progressRows) && progressRows.length > 0
-      ? progressRows
-      : Array.isArray(championshipSnapshot?.verifiedProgress)
-        ? championshipSnapshot.verifiedProgress
-        : [];
-
-  const champModeAttemptIds = new Set<string>(
-    Array.isArray(championshipSnapshot?.championshipAttemptIds)
-      ? championshipSnapshot.championshipAttemptIds
-      : [],
-  );
+  // Successful empty reads are authoritative after reset. Legacy snapshots are
+  // never a fallback for scores/progress or evidence to reclassify a database row.
+  const effectiveAttempts = Array.isArray(attemptsRows) ? attemptsRows : [];
 
   const soloLocs: Record<number, SoloLocationProgress> = {};
   const champLocs: Record<number, ChampionshipLocationRecord> = {};
@@ -680,7 +665,7 @@ export function applySupabaseAttemptsAndProgressToProfile(
       const locId = Number(row.location_id);
       if (!locId || locId < 1 || locId > 10) continue;
       const mode = parseGameMode(row.mode);
-      if (!mode || (mode === 'solo' && (row.session_id != null || champModeAttemptIds.has(String(row.id)))) ||
+      if (!mode || (mode === 'solo' && row.session_id != null) ||
         (mode === 'championship' && !validSessionId(row.session_id))) continue;
       const isChamp = mode === 'championship';
       const score = Number(row.score ?? Number(row.correct_count || 0) * 10);
@@ -726,55 +711,9 @@ export function applySupabaseAttemptsAndProgressToProfile(
     }
   }
 
-  // Merge game_progress rows (unlocked_level & completed_locations)
-  let dbSoloUnlockedLevel = 1;
-  let dbChampUnlockedLevel = 1;
-
-  for (const progRow of effectiveProgress) {
-    const progMode = parseGameMode(progRow?.mode);
-    if (!progMode) continue;
-    const progUnlocked = Math.max(1, Math.min(5, Number(progRow?.unlocked_level || 1)));
-    const completedLocs: number[] = Array.isArray(progRow?.completed_locations)
-      ? progRow.completed_locations
-          .map((x: any) => Number(x))
-          .filter((n: number) => n >= 1 && n <= 10)
-      : [];
-
-    if (progMode === 'championship') {
-      dbChampUnlockedLevel = Math.max(dbChampUnlockedLevel, progUnlocked);
-      for (const locId of completedLocs) {
-        if (!champLocs[locId]) {
-          champLocs[locId] = {
-            locationId: locId,
-            completed: true,
-            championshipScore: 0,
-            correctCount: 0,
-            timeSpentSeconds: 0,
-            medal: 'none',
-            completedAt: progRow?.updated_at || new Date().toISOString(),
-          };
-        }
-      }
-    } else {
-      dbSoloUnlockedLevel = Math.max(dbSoloUnlockedLevel, progUnlocked);
-      for (const locId of completedLocs) {
-        if (!soloLocs[locId]) {
-          soloLocs[locId] = {
-            locationId: locId,
-            completed: true,
-            latestScore: 0,
-            bestScore: 0,
-            latestCorrectCount: 0,
-            bestCorrectCount: 0,
-            bestTimeSeconds: 0,
-            attemptsCount: 1,
-            medal: 'none',
-            lastPlayedAt: progRow?.updated_at || new Date().toISOString(),
-          };
-        }
-      }
-    }
-  }
+  // Legacy game_progress is UNIQUE(student_id), so it cannot independently
+  // represent both modes. Never let its overwritten/mixed row grant completions
+  // to another mode. The existing unlock rules use verified per-mode attempts.
 
   const soloBestTotal = Object.values(soloLocs).reduce(
     (acc, l) => acc + (l.bestScore || 0),
@@ -796,7 +735,7 @@ export function applySupabaseAttemptsAndProgressToProfile(
     bestTotalScore: soloBestTotal,
     latestTotalScore: soloLatestTotal,
     academicGrade: calculateAdventureAcademicGrade(soloBestTotal),
-    unlockedLevel: Math.max(dbSoloUnlockedLevel, soloUnlocked.unlockedLevel),
+    unlockedLevel: soloUnlocked.unlockedLevel,
     completedLevels: soloUnlocked.completedLevels,
   };
 
@@ -817,7 +756,7 @@ export function applySupabaseAttemptsAndProgressToProfile(
     totalChampionshipScore: champBestTotal,
     academicGrade: calculateAdventureAcademicGrade(champBestTotal),
     totalTimeSeconds: champTotalTime,
-    unlockedLevel: Math.max(dbChampUnlockedLevel, champUnlocked.unlockedLevel),
+    unlockedLevel: champUnlocked.unlockedLevel,
     completedLevels: champUnlocked.completedLevels,
   };
 
@@ -825,62 +764,18 @@ export function applySupabaseAttemptsAndProgressToProfile(
 }
 
 /**
- * Syncs the student's verified `game_attempts` and `game_progress` rows from Supabase
- * into `public.student_profiles.championship_data` so that Teacher Dashboard always sees
- * 100% real Supabase data (never localStorage).
+ * Reads authoritative attempts/progress without updating account/profile snapshots.
  */
-async function syncVerifiedSupabaseProgressToStudentProfileRow(
-  clientToUse: any,
-  studentProfileId: string,
-  extraChampAttemptId?: string,
-): Promise<{ attemptsRows: any[]; progressRows: any[]; championshipSnapshot: any }> {
-  const [attRes, progRes, profRes] = await Promise.all([
-    clientToUse
-      .from('game_attempts')
-      .select(
-        'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
-      )
-      .eq('student_id', studentProfileId)
-      .order('completed_at', { ascending: true }),
-    clientToUse
-      .from('game_progress')
-      .select(
-        'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at',
-      )
-      .eq('student_id', studentProfileId),
-    clientToUse
-      .from('student_profiles')
-      .select('id, championship_data')
-      .eq('id', studentProfileId)
-      .maybeSingle(),
+async function loadVerifiedStudentResults(client: any, studentId: string) {
+  const [attemptsRows, progressRows] = await Promise.all([
+    readResultRows(() => client.from('game_attempts').select(
+      'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
+      { count: 'exact' }).eq('student_id', studentId).order('completed_at', { ascending: true }).order('id', { ascending: true })),
+    readResultRows(() => client.from('game_progress').select(
+      'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at',
+      { count: 'exact' }).eq('student_id', studentId).order('id', { ascending: true })),
   ]);
-
-  const attemptsRows = Array.isArray(attRes?.data) ? attRes.data : [];
-  const progressRows = Array.isArray(progRes?.data) ? progRes.data : [];
-  const prevSnap = profRes?.data?.championship_data || {};
-  const prevChampIds: string[] = Array.isArray(prevSnap?.championshipAttemptIds)
-    ? prevSnap.championshipAttemptIds
-    : [];
-  const championshipAttemptIds = extraChampAttemptId
-    ? Array.from(new Set([...prevChampIds, extraChampAttemptId]))
-    : prevChampIds;
-
-  const championshipSnapshot = {
-    verifiedAttempts: attemptsRows,
-    verifiedProgress: progressRows,
-    championshipAttemptIds,
-    attemptsCount: attemptsRows.length,
-    updatedAt: new Date().toISOString(),
-  };
-
-  if (attemptsRows.length > 0 || progressRows.length > 0) {
-    await clientToUse
-      .from('student_profiles')
-      .update({ championship_data: championshipSnapshot })
-      .eq('id', studentProfileId);
-  }
-
-  return { attemptsRows, progressRows, championshipSnapshot };
+  return { attemptsRows, progressRows };
 }
 
 /**
@@ -895,62 +790,9 @@ export async function hydrateStudentProgressFromSupabase(
     return baseProfile;
   }
 
-  const candidateIds = Array.from(
-    new Set([baseProfile.id, baseProfile.authUserId].filter((x): x is string => Boolean(x && isValidUuid(x)))),
-  );
-
-  if (candidateIds.length === 0) {
-    return baseProfile;
-  }
-
-  try {
-    const [attemptsRes, progressRes, profRes] = await Promise.all([
-      clientToUse
-        .from('game_attempts')
-        .select(
-          'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
-        )
-        .in('student_id', candidateIds)
-        .order('completed_at', { ascending: true }),
-      clientToUse
-        .from('game_progress')
-        .select(
-          'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at',
-        )
-        .in('student_id', candidateIds),
-      clientToUse
-        .from('student_profiles')
-        .select('id, auth_user_id, championship_data')
-        .in('id', candidateIds)
-        .maybeSingle(),
-    ]);
-
-    const attemptsRows = Array.isArray(attemptsRes.data) ? attemptsRes.data : [];
-    const progressRows = Array.isArray(progressRes.data) ? progressRes.data : [];
-    const championshipSnapshot = profRes?.data?.championship_data || null;
-
-    // Also keep student_profiles.championship_data synced with real game_attempts & game_progress rows
-    if (
-      (attemptsRows.length > 0 || progressRows.length > 0) &&
-      profRes?.data?.id &&
-      (!championshipSnapshot ||
-        !Array.isArray(championshipSnapshot.verifiedAttempts) ||
-        championshipSnapshot.verifiedAttempts.length !== attemptsRows.length)
-    ) {
-      await syncVerifiedSupabaseProgressToStudentProfileRow(clientToUse, profRes.data.id).catch(
-        () => {},
-      );
-    }
-
-    return applySupabaseAttemptsAndProgressToProfile(
-      baseProfile,
-      attemptsRows,
-      progressRows,
-      championshipSnapshot,
-    );
-  } catch {
-    return baseProfile;
-  }
+  if (!isValidUuid(baseProfile.id)) throw new Error('ID profil siswa belum terverifikasi.');
+  const { attemptsRows, progressRows } = await loadVerifiedStudentResults(clientToUse, baseProfile.id);
+  return applySupabaseAttemptsAndProgressToProfile(baseProfile, attemptsRows, progressRows);
 }
 
 export interface SaveGameAttemptParams {
@@ -980,6 +822,7 @@ export interface PendingSyncAttempt extends SaveGameAttemptParams {
   timestamp: number;
   score: number;
   syncState?: 'pending' | 'sending' | 'uncertain';
+  protocolVersion?: string;
 }
 
 const OFFLINE_QUEUE_KEY = 'aqua_math_offline_attempts_queue_v1';
@@ -998,10 +841,10 @@ const attemptSync = createAttemptSync({
     return { authUserId: session.user.id, studentId: profile.id, client };
   },
   onConfirmed: async (context, item, id) => {
-    const synced = await syncVerifiedSupabaseProgressToStudentProfileRow(context.client, context.studentId, item.mode === 'championship' ? id : undefined);
+    const synced = await loadVerifiedStudentResults(context.client, context.studentId);
     const { data: row } = await context.client.from('student_profiles').select('*').eq('id', context.studentId).maybeSingle();
     if (!row) return {};
-    return { updatedProfile: applySupabaseAttemptsAndProgressToProfile(mapDbRowToStudentProfile(row), synced.attemptsRows, synced.progressRows, synced.championshipSnapshot) };
+    return { updatedProfile: applySupabaseAttemptsAndProgressToProfile(mapDbRowToStudentProfile(row), synced.attemptsRows, synced.progressRows) };
   },
 });
 
@@ -1667,7 +1510,7 @@ export async function getStudentProfile(studentId: string): Promise<StudentProfi
  * 3. saveGameAttempt() / saveAttemptToSupabase()
  * Invokes Supabase RPC `save_game_attempt` using the authenticated student session (`studentSupabase`),
  * guarantees writes to `public.game_attempts` and `public.game_progress` using `student_profiles.id`,
- * and syncs verified Supabase progress back to `student_profiles.championship_data`.
+ * and reloads authoritative Supabase results without writing profile snapshots.
  */
 const pendingSaveRequests = new Map<string, Promise<SaveGameAttemptResult>>();
 export function saveGameAttempt(params: SaveGameAttemptParams): Promise<SaveGameAttemptResult> {
@@ -1827,13 +1670,14 @@ export async function getChampionshipScore(
  * Fetches real aggregate data for the Teacher Dashboard strictly from Supabase
  * (`student_profiles`, `game_attempts`, and `game_progress` — NEVER from localStorage).
  */
-export async function getTeacherDashboardData(): Promise<{
+export async function getTeacherDashboardData(client = supabase): Promise<{
   students: StudentProfile[];
   totalAttemptsCount: number;
   classSettings: any | null;
   supabaseConnected: boolean;
+  error?: string;
 }> {
-  if (!isSupabaseConfigured || !supabase) {
+  if (!isSupabaseConfigured || !client) {
     return {
       students: [],
       totalAttemptsCount: 0,
@@ -1843,29 +1687,17 @@ export async function getTeacherDashboardData(): Promise<{
   }
 
   try {
-    const [studentsRes, attemptsRes, progressRes] = await Promise.all([
-      supabase
-        .from('student_profiles')
-        .select(
-          'id, auth_user_id, display_name, character, is_active, created_at, updated_at, championship_data',
-        )
-        .order('display_name', { ascending: true }),
-      supabase
-        .from('game_attempts')
-        .select(
-          'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
-        )
-        .order('completed_at', { ascending: true }),
-      supabase
-        .from('game_progress')
-        .select(
-          'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at',
-        ),
+    const [dbRows, allAttempts, allProgress] = await Promise.all([
+      readResultRows(() => client.from('student_profiles').select(
+        'id, auth_user_id, display_name, character, is_active, created_at, updated_at', { count: 'exact' })
+        .order('display_name', { ascending: true }).order('id', { ascending: true })),
+      readResultRows(() => client.from('game_attempts').select(
+        'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at', { count: 'exact' })
+        .order('completed_at', { ascending: true }).order('id', { ascending: true })),
+      readResultRows(() => client.from('game_progress').select(
+        'id, student_id, mode, unlocked_level, last_level, last_location, completed_locations, updated_at', { count: 'exact' })
+        .order('id', { ascending: true })),
     ]);
-
-    const dbRows = studentsRes.data || [];
-    const allAttempts = Array.isArray(attemptsRes.data) ? attemptsRes.data : [];
-    const allProgress = Array.isArray(progressRes.data) ? progressRes.data : [];
 
     // Group game_attempts and game_progress by student_id
     const attemptsByStudentId = new Map<string, any[]>();
@@ -1886,7 +1718,7 @@ export async function getTeacherDashboardData(): Promise<{
 
     const matchedAuthIds = new Set<string>();
     const matchedNormNames = new Set<string>();
-    let computedTotalAttempts = allAttempts.length;
+    const computedTotalAttempts = allAttempts.length;
 
     const mergedStudents: StudentProfile[] = dbRows.map((row) => {
       const norm = normalizePlayerName(row.display_name || '');
@@ -1899,21 +1731,10 @@ export async function getTeacherDashboardData(): Promise<{
 
       const directAttempts = attemptsByStudentId.get(row.id) || [];
       const directProgress = progressByStudentId.get(row.id) || [];
-      const snap = row.championship_data || null;
-
-      if (
-        allAttempts.length === 0 &&
-        Array.isArray(snap?.verifiedAttempts) &&
-        snap.verifiedAttempts.length > 0
-      ) {
-        computedTotalAttempts += snap.verifiedAttempts.length;
-      }
-
       return applySupabaseAttemptsAndProgressToProfile(
         baseProfile,
         directAttempts,
         directProgress,
-        snap,
       );
     });
 
@@ -1941,10 +1762,11 @@ export async function getTeacherDashboardData(): Promise<{
       students: mergedStudents,
       totalAttemptsCount: computedTotalAttempts,
       classSettings: null,
-      supabaseConnected: !studentsRes.error,
+      supabaseConnected: true,
     };
   } catch {
     return {
+      error: 'Sinkronisasi Supabase gagal atau data berubah saat dibaca. Data terakhir belum terverifikasi; coba muat ulang.',
       students: [],
       totalAttemptsCount: 0,
       classSettings: null,

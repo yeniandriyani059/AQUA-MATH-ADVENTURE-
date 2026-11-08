@@ -1,6 +1,7 @@
 import { parseGameMode, validSessionId, confirmAttempt } from './championshipContract';
 import type { SaveGameAttemptParams, SaveGameAttemptResult, PendingSyncAttempt } from './supabaseService';
 
+export const ATTEMPT_PROTOCOL = 'snapshot-free-v1';
 export const QUEUE_KEY = 'aqua_math_offline_attempts_queue_v1';
 const RECEIPTS_KEY = 'aqua_math_confirmed_attempts_v1';
 export interface AttemptContext {
@@ -32,6 +33,8 @@ export function createAttemptSync(deps: {
     const score = item.score;
     if (!item.authUserId || item.authUserId !== ctx.authUserId || item.studentId !== ctx.studentId)
       return pending('Antrean ditahan sampai siswa pemilik yang benar login.', score);
+    if (item.protocolVersion !== ATTEMPT_PROTOCOL)
+      return pending('Antrean dari versi sebelum perbaikan ditahan untuk pemeriksaan; tidak dihapus atau dikirim ulang otomatis.', score);
     const mode = parseGameMode(item.mode);
     if (!mode || (mode === 'solo' && item.sessionId != null)) return pending('Mode atau sesi ambigu; hasil ditahan tanpa mengubah mode.', score);
     const saved = receipt(item);
@@ -46,8 +49,8 @@ export function createAttemptSync(deps: {
       return pending('Status penyimpanan belum pasti. Antrean ditahan untuk rekonsiliasi agar tidak menggandakan nilai.', score);
     if (mode === 'championship') {
       if (!validSessionId(item.sessionId)) return pending('Sesi Championship belum terikat pada hasil ini; antrean tetap disimpan.', score);
-      const { data, error } = await ctx.client.from('championship_sessions').select('id, is_active').eq('id', item.sessionId).eq('is_active', true).maybeSingle();
-      if (error || !data?.is_active || data.id !== item.sessionId) return pending('Sesi Championship tidak tersedia atau tidak aktif; antrean tetap disimpan.', score);
+      const { data, error } = await ctx.client.from('championship_sessions').select('id, status').eq('id', item.sessionId).eq('status', 'OPEN').maybeSingle();
+      if (error || data?.status !== 'OPEN' || data.id !== item.sessionId) return pending('Sesi Championship tidak tersedia atau tidak aktif; antrean tetap disimpan.', score);
     }
     // Persist before sending. A crash or timeout must never silently trigger a second write.
     write(read().map(row => keyOf(row) === keyOf(item) ? { ...row, syncState: 'sending' } : row));
@@ -100,7 +103,7 @@ export function createAttemptSync(deps: {
         try { ctx = await deps.context(); } catch { /* retain offline result */ }
         const item: PendingSyncAttempt = { ...params,
           authUserId: params.authUserId || (ctx?.studentId === params.studentId ? ctx.authUserId : undefined),
-          idempotencyKey: params.idempotencyKey || crypto.randomUUID(), timestamp: Date.now(), score, syncState: 'pending',
+          idempotencyKey: params.idempotencyKey || crypto.randomUUID(), timestamp: Date.now(), score, syncState: 'pending', protocolVersion: ATTEMPT_PROTOCOL,
         };
         const previous = read().find(row => keyOf(row) === keyOf(item));
         if (previous && fingerprint(previous) !== fingerprint(item)) return pending('ID percobaan dipakai untuk hasil berbeda; hasil lama dipertahankan.', score);

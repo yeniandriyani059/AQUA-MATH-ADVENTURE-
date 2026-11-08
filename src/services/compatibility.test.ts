@@ -38,7 +38,7 @@ function harness() {
       from(table: string) {
         let id: string;
         const query: any = { select() { return query; }, eq(k: string, v: string) { if (k === 'id') id = v; return query; },
-          maybeSingle: async () => ({ data: table === 'championship_sessions' ? { id, is_active: sessionOpen } : records.get(id) || null }) };
+          maybeSingle: async () => ({ data: table === 'championship_sessions' ? { id, status: sessionOpen ? 'OPEN' : 'CLOSED' } : records.get(id) || null }) };
         return query;
       },
     } };

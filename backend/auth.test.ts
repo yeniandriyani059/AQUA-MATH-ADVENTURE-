@@ -31,7 +31,7 @@ function mock(options: Record<string, any> = {}) {
           select() { return q; }, eq() { return q; }, order() { return q; },
           update(value: any) { calls.push(['update', table, value]); return q; },
           delete() { calls.push(['delete', table]); return q; },
-          maybeSingle: async () => ({ data: options.missingProfile ? null : table === 'game_attempts' ? savedAttempt : table === 'championship_sessions' ? { id: 'session', is_active: !options.closedSession } : { ...profile, ...options.profile }, error: options.profileError ? new Error('denied') : null }),
+          maybeSingle: async () => ({ data: options.missingProfile ? null : table === 'game_attempts' ? savedAttempt : table === 'championship_sessions' ? { id: 'session', status: options.closedSession ? 'CLOSED' : 'OPEN' } : { ...profile, ...options.profile }, error: options.profileError ? new Error('denied') : null }),
           then(resolve: any) { return Promise.resolve({ data: [], error: null }).then(resolve); },
         };
         return q;

@@ -433,8 +433,8 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
         return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Hasil permainan tidak valid.' });
       if (mode === 'championship') {
         if (!validSessionId(sessionId)) return void res.status(400).json({ ok: false, syncedToSupabase: false });
-        const { data: session, error: sessionError } = await sb.from('championship_sessions').select('id, is_active').eq('id', sessionId).eq('is_active', true).maybeSingle();
-        if (sessionError || !session?.is_active) return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Sesi Championship tidak aktif.' });
+        const { data: session, error: sessionError } = await sb.from('championship_sessions').select('id, status').eq('id', sessionId).eq('status', 'OPEN').maybeSingle();
+        if (sessionError || session?.status !== 'OPEN') return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Sesi Championship tidak aktif.' });
       }
       const { data: attempt, error: attemptError } = await sb.rpc('save_game_attempt', {
         p_mode: mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO',

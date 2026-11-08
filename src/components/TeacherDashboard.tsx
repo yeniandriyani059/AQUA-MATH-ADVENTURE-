@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import { createDashboardRefresh } from '../services/dashboardRefresh';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -48,7 +49,6 @@ import {
   executeResetStudentScoresAndProgress,
   exportResetGameDataBackup,
   findOfficialStudentSpec,
-  flushOfflineSyncQueue,
   getResetGameDataPreview,
   getTeacherDashboardData,
   mapCharacterIdToDbCharacter,
@@ -312,28 +312,35 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const loadRealSupabaseData = async () => {
-    setIsRefreshing(true);
-    await flushOfflineSyncQueue().catch(() => {});
-    const data = await getTeacherDashboardData();
-    if (data.supabaseConnected) {
-      saveStudents(data.students);
-      onUpdateStudents(data.students);
-      if (data.students.length > 0) {
-        setStatusBanner(
-          `Data berhasil disinkronkan dari database Supabase! (${data.students.length} siswa, ${data.totalAttemptsCount} riwayat percobaan).`,
-        );
-      } else {
-        setStatusBanner('Terhubung ke Supabase. Belum ada data siswa tersimpan.');
-      }
-    }
-    setIsRefreshing(false);
-  };
+  const latestUpdateStudents = useRef(onUpdateStudents);
+  latestUpdateStudents.current = onUpdateStudents;
+  const refreshController = useRef<ReturnType<typeof createDashboardRefresh> | null>(null);
+  if (!refreshController.current) {
+    refreshController.current = createDashboardRefresh({
+      read: () => getTeacherDashboardData(),
+      apply: (data) => {
+        saveStudents(data.students);
+        latestUpdateStudents.current(data.students);
+      },
+      status: setStatusBanner,
+      loading: setIsRefreshing,
+    });
+  }
+  const loadRealSupabaseData = () => refreshController.current!.refresh();
 
   useEffect(() => {
-    if (authenticated) {
-      loadRealSupabaseData();
-    }
+    const controller = refreshController.current!;
+    controller.setEnabled(authenticated);
+    if (!authenticated) return;
+    const refresh = () => { void controller.refresh(); };
+    refresh();
+    window.addEventListener('focus', refresh);
+    const timer = window.setInterval(refresh, 15000);
+    return () => {
+      controller.setEnabled(false); // Ignore late reads after logout/unmount.
+      window.removeEventListener('focus', refresh);
+      window.clearInterval(timer);
+    };
   }, [authenticated]);
 
   const leaderboard = buildChampionshipLeaderboard(students);

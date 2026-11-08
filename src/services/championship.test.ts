@@ -32,7 +32,7 @@ function harness() {
       let id: string;
       const q: any = { select() { return q; }, eq(k: string, v: string) { if (k === 'id') id = v; return q; },
         maybeSingle: async () => table === 'championship_sessions'
-          ? { data: { id, is_active: id === activeSession } }
+          ? { data: { id, status: id === activeSession ? 'OPEN' : 'CLOSED' } }
           : readDenied ? { error: new Error('read denied') } : { data: rows.find(row => row.id === id) } };
       return q;
     },
@@ -47,7 +47,7 @@ function harness() {
   const engine = createAttemptSync({ storage: () => storage, context: async () => ({ authUserId: 'owner', studentId: 'student', client }) });
   return { engine, storage, rows, calls, client, setActive: (id: string) => { activeSession = id; }, setFail: (v: boolean) => { fail = v; }, wrongMode: () => { returnedMode = 'SOLO'; }, wrongSession: () => { returnedSession = S2; }, denyRead: () => { readDenied = true; } };
 }
-const result = { studentId: 'student', authUserId: 'owner', mode: 'championship' as const, sessionId: S1, locationId: 1, levelNumber: 1, correctCount: 9, wrongCount: 1, durationSeconds: 30, idempotencyKey: 'mission' };
+const result = { protocolVersion: 'snapshot-free-v1', studentId: 'student', authUserId: 'owner', mode: 'championship' as const, sessionId: S1, locationId: 1, levelNumber: 1, correctCount: 9, wrongCount: 1, durationSeconds: 30, idempotencyKey: 'mission' };
 
 test('mission freezes mode, owner, session and retry key at start, not submission', async () => {
   let active = S1;
@@ -122,18 +122,19 @@ test('Dashboard partitions explicit modes and ignores ambiguous historical rows 
   const original = JSON.stringify(attempts);
   const progress = [{ mode: 'CHAMPIONSHIP', unlocked_level: 2, completed_locations: [1, 2] }, { mode: null, unlocked_level: 5, completed_locations: [9] }];
   const profile = applySupabaseAttemptsAndProgressToProfile(createEmptyStudentProfile('student', 'Synthetic', 'bima'), attempts, progress, { championshipAttemptIds: ['hint'] });
-  assert.equal(profile.solo.bestTotalScore, 20); assert.equal(profile.solo.unlockedLevel, 1);
+  assert.equal(profile.solo.bestTotalScore, 120); assert.equal(profile.solo.unlockedLevel, 1);
   assert.equal(profile.championship.totalChampionshipScore, 170); assert.equal(profile.championship.unlockedLevel, 2);
   assert.equal(JSON.stringify(attempts), original);
   assert.equal(buildChampionshipLeaderboard([profile])[0].championshipScore, 170);
 });
 
-test('snapshot-only fallback still partitions modes strictly', () => {
+test('empty authoritative rows never revive snapshot-only results after reset', () => {
   const p = applySupabaseAttemptsAndProgressToProfile(createEmptyStudentProfile('student', 'Synthetic', 'bima'), [], [], {
     verifiedAttempts: [{ id: 'champ', mode: 'CHAMPIONSHIP', session_id: S1, score: 90, location_id: 1 }, { id: 'unknown', score: 100, location_id: 2 }],
     verifiedProgress: [{ mode: 'CHAMPIONSHIP', unlocked_level: 2 }],
   });
-  assert.equal(p.solo.bestTotalScore, 0); assert.equal(p.solo.unlockedLevel, 1); assert.equal(p.championship.totalChampionshipScore, 90);
+  assert.equal(p.solo.bestTotalScore, 0); assert.equal(p.solo.unlockedLevel, 1); assert.equal(p.championship.totalChampionshipScore, 0);
+  assert.equal(p.championship.unlockedLevel, 1);
 });
 
 test('cached uppercase mode stays Championship and local completion never awards SOLO points', () => {
@@ -159,7 +160,7 @@ test('active-session lookup never falls back to cached ID after database failure
   let databaseError = true;
   (studentSupabase as any).from = () => {
     const q: any = { select() { return q; }, eq() { return q; }, order() { return q; }, limit(n: number) { assert.equal(n, 2); return q; },
-      maybeSingle: async () => databaseError ? { error: new Error('unavailable or ambiguous') } : { data: { id: S2, session_name: 'Synthetic' } } };
+      maybeSingle: async () => databaseError ? { error: new Error('unavailable or ambiguous') } : { data: { id: S2, session_name: 'Synthetic', status: 'OPEN' } } };
     return q;
   };
   try {
