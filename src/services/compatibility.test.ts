@@ -32,7 +32,7 @@ function harness() {
         if (behavior === 'denied') return { error: { code: '42501' } };
         if (behavior === 'timeout') throw new Error('connection lost after sending');
         if (behavior === 'empty') return { data: {} };
-        const row = { id: `db-${calls.length}`, student_id: `profile-${owner}`, mode: args.p_mode };
+        const row = { id: `db-${calls.length}`, student_id: `profile-${owner}`, mode: args.p_mode, session_id: args.p_session_id };
         records.set(row.id, row); return { data: { attempt_id: row.id, student_id: row.student_id } };
       },
       from(table: string) {
@@ -104,16 +104,16 @@ test('timeout, incomplete response, and interrupted sending never automatically 
 test('SOLO and Championship keep distinct payloads; retries never replace original session', async () => {
   const h = harness(); h.setActive(null);
   await h.engine.save(attempt);
-  await h.engine.save({ ...attempt, mode: 'championship', sessionId: 'original-session', idempotencyKey: 'champ' });
+  await h.engine.save({ ...attempt, mode: 'championship', sessionId: '11111111-1111-4111-8111-111111111111', idempotencyKey: 'champ' });
   h.setActive('A'); await h.engine.flush();
   assert.equal(h.calls[0].args.p_mode, 'SOLO'); assert.equal(h.calls[0].args.p_session_id, null);
-  assert.equal(h.calls[1].args.p_mode, 'CHAMPIONSHIP'); assert.equal(h.calls[1].args.p_session_id, 'original-session');
+  assert.equal(h.calls[1].args.p_mode, 'CHAMPIONSHIP'); assert.equal(h.calls[1].args.p_session_id, '11111111-1111-4111-8111-111111111111');
 });
 
 test('Championship with no session or closed session is retained without RPC call', async () => {
   const h = harness();
   await h.engine.save({ ...attempt, mode: 'championship', idempotencyKey: 'missing' });
-  h.closeSession(); await h.engine.save({ ...attempt, mode: 'championship', sessionId: 'closed', idempotencyKey: 'closed' });
+  h.closeSession(); await h.engine.save({ ...attempt, mode: 'championship', sessionId: '22222222-2222-4222-8222-222222222222', idempotencyKey: 'closed' });
   await h.engine.flush(); assert.equal(h.calls.length, 0); assert.equal(h.engine.read().length, 2);
 });
 

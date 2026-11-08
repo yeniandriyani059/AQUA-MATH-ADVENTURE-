@@ -7,6 +7,7 @@ import { getSupabaseClient } from './auth';
 // Entire Supabase boundary is injected: no network requests, credentials or production writes.
 function mock(options: Record<string, any> = {}) {
   const calls: any[] = [];
+  let savedAttempt: any = null;
   const user = options.user || { id: 'teacher-id', email: 'teacher@example.test' };
   const profile = options.student
     ? { id: 'student-id', auth_user_id: user.id, is_active: true, ...options.student }
@@ -30,7 +31,7 @@ function mock(options: Record<string, any> = {}) {
           select() { return q; }, eq() { return q; }, order() { return q; },
           update(value: any) { calls.push(['update', table, value]); return q; },
           delete() { calls.push(['delete', table]); return q; },
-          maybeSingle: async () => ({ data: options.missingProfile ? null : table === 'championship_sessions' ? { id: 'session', is_active: !options.closedSession } : { ...profile, ...options.profile }, error: options.profileError ? new Error('denied') : null }),
+          maybeSingle: async () => ({ data: options.missingProfile ? null : table === 'game_attempts' ? savedAttempt : table === 'championship_sessions' ? { id: 'session', is_active: !options.closedSession } : { ...profile, ...options.profile }, error: options.profileError ? new Error('denied') : null }),
           then(resolve: any) { return Promise.resolve({ data: [], error: null }).then(resolve); },
         };
         return q;
@@ -38,6 +39,7 @@ function mock(options: Record<string, any> = {}) {
       rpc: async (name: string, args: any) => {
         calls.push(['rpc', name, args, token]);
         if (options.throwRpc) throw new Error('offline');
+        savedAttempt = { id: 'attempt-id', student_id: 'student-id', mode: options.savedMode || args.p_mode, session_id: options.savedSession || args.p_session_id };
         return options.rpcFailure ? { error: new Error('RLS denied') } : { data: options.emptyRpc ? null : { attempt_id: 'attempt-id', student_id: 'student-id' } };
       },
     };
@@ -107,12 +109,12 @@ for (const path of ['/api/student/select-identity', '/api/student/save-attempt',
 
 test('SOLO and Championship writes use existing RPC with verified caller, never arbitrary student ID', async () => {
   for (const mode of ['solo', 'championship']) {
-    const r = await request(student, '/api/student/save-attempt', { ...attempt, mode, sessionId: 'session' }, 'student-token');
+    const r = await request(student, '/api/student/save-attempt', { ...attempt, mode, sessionId: '11111111-1111-4111-8111-111111111111' }, 'student-token');
     assert.equal(r.status, 200); assert.equal(r.body.syncedToSupabase, true);
     const rpc = r.calls.find(c => c[0] === 'rpc');
     assert.equal(rpc[1], 'save_game_attempt'); assert.equal(rpc[3], 'student-token');
     assert.equal(rpc[2].p_mode, mode.toUpperCase()); assert.equal(rpc[2].student_id, undefined);
-    assert.equal(rpc[2].p_session_id, mode === 'solo' ? null : 'session');
+    assert.equal(rpc[2].p_session_id, mode === 'solo' ? null : '11111111-1111-4111-8111-111111111111');
   }
 });
 
@@ -171,4 +173,14 @@ test('RLS-scoped client is also used by authorized teacher roster read', async (
   const r = await request({}, '/api/admin/students', undefined, 'teacher-token');
   assert.equal(r.status, 200);
   assert.ok(r.calls.filter(c => c[0] === 'client').every(c => c[1] === 'teacher-token'));
+});
+
+
+test('backend refuses acknowledgement when RPC persisted Championship under wrong mode or session', async () => {
+  for (const options of [{ savedMode: 'SOLO' }, { savedSession: '22222222-2222-4222-8222-222222222222' }]) {
+    const r = await request({ ...student, ...options }, '/api/student/save-attempt', { ...attempt, mode: 'championship', sessionId: '11111111-1111-4111-8111-111111111111' }, 'student-token');
+    assert.equal(r.status, 409); assert.equal(r.body.syncedToSupabase, false);
+    const writes = r.calls.filter(c => c[0] === 'rpc');
+    assert.equal(writes.length, 1); assert.equal(writes[0][2].p_mode, 'CHAMPIONSHIP');
+  }
 });

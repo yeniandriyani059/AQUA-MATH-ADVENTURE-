@@ -1,3 +1,4 @@
+import { captureMissionRun, MissionRun } from './services/championshipContract';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
@@ -44,6 +45,7 @@ import {
 import { isSupabaseConfigured, supabase } from './services/supabaseClient';
 import {
   logoutStudentAccount,
+  getActiveChampionshipSession,
   restoreActiveStudentSessionFromSupabase,
 } from './services/supabaseService';
 import {
@@ -108,6 +110,8 @@ export default function App() {
   });
 
   // Active modals & overlays during gameplay
+  const missionRun = useRef<MissionRun | null>(null);
+  const openingMission = useRef(false);
   const [activeQuizLocation, setActiveQuizLocation] = useState<MissionLocation | null>(null);
   const [missionResult, setMissionResult] = useState<MissionResultSummary | null>(null);
   const [showWorldMap, setShowWorldMap] = useState(false);
@@ -240,6 +244,9 @@ export default function App() {
     (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autostart') === '1'
       ? createEmptyStudentProfile('demo-autostart-preview', 'Petualang Aqua', 'bima')
       : null);
+  const liveMissionIdentity = useRef('');
+  liveMissionIdentity.current = `${currentProfile?.id}:${currentProfile?.authUserId}:${gameMode}`;
+
   const unlockedLevel = currentProfile
     ? gameMode === 'solo'
       ? currentProfile.solo.unlockedLevel
@@ -333,8 +340,8 @@ export default function App() {
   }, [shellState, showHowToPlay, activeQuizLocation, missionResult, handleStartRegisterFromTitle]);
 
   const handleTriggerInteract = useCallback(
-    (loc: MissionLocation) => {
-      if (!currentProfile) return;
+    async (loc: MissionLocation) => {
+      if (!currentProfile || openingMission.current) return;
       if (gameMode === 'solo' && !settings.soloAdventureOpen) {
         setToastNotice('Mode Solo Adventure sedang ditutup oleh Guru.');
         return;
@@ -350,10 +357,20 @@ export default function App() {
         );
         return;
       }
-      soundManager.playClick();
-      joystickRef.current = { x: 0, y: 0 };
-      setShowWorldMap(false);
-      setActiveQuizLocation(loc);
+      openingMission.current = true;
+      const identity = liveMissionIdentity.current;
+      try {
+        const capturedRun = await captureMissionRun({ studentId: currentProfile.id,
+          authUserId: currentProfile.authUserId || undefined, mode: gameMode, locationId: loc.id }, getActiveChampionshipSession);
+        if (liveMissionIdentity.current !== identity) return;
+        missionRun.current = capturedRun;
+        soundManager.playClick();
+        joystickRef.current = { x: 0, y: 0 };
+        setShowWorldMap(false);
+        setActiveQuizLocation(loc);
+      } catch (error) {
+        setToastNotice(error instanceof Error ? error.message : 'Sesi permainan belum tersedia.');
+      } finally { openingMission.current = false; }
     },
     [currentProfile, gameMode, settings],
   );
@@ -363,16 +380,18 @@ export default function App() {
     answers: Record<string, OptionLetter>,
     timeSpentSeconds: number,
   ) => {
-    if (!currentProfile) return;
+    const run = missionRun.current;
+    if (!currentProfile || !run || run.studentId !== currentProfile.id || run.locationId !== locationId) return;
     const { updatedStudent, allStudents, summary } = await recordMissionCompletionAsync(
-      currentProfile.id,
-      gameMode,
+      run.studentId,
+      run.mode,
       locationId,
       answers,
       timeSpentSeconds,
+      run,
     );
 
-    if (gameMode === 'championship') {
+    if (run.mode === 'championship') {
       const board = buildChampionshipLeaderboard(allStudents);
       const myEntry = board.find((b) => b.studentId === updatedStudent.id);
       if (myEntry) {
@@ -1079,9 +1098,9 @@ export default function App() {
       {activeQuizLocation && (
         <MissionQuizModal
           location={activeQuizLocation}
-          mode={gameMode}
+          mode={missionRun.current?.mode || gameMode}
           onSubmitMission={handleMissionSubmit}
-          onCancelMission={() => setActiveQuizLocation(null)}
+          onCancelMission={() => { missionRun.current = null; setActiveQuizLocation(null); }}
         />
       )}
 

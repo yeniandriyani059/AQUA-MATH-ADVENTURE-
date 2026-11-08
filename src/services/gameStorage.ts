@@ -1,3 +1,5 @@
+import type { MissionRun } from './championshipContract';
+import { parseGameMode } from './championshipContract';
 import { verifyTeacherSession } from './teacherSession';
 import {
   applyMissionResultToProfile,
@@ -193,6 +195,9 @@ export function recordMissionCompletion(
   allStudents: StudentProfile[];
   summary: MissionResultSummary;
 } {
+  const parsedMode = parseGameMode(mode);
+  if (!parsedMode) throw new Error('Mode permainan tidak valid.');
+  mode = parsedMode;
   const students = loadStudents();
   const idx = students.findIndex(
     (s) => s.id === studentId || (s.authUserId && s.authUserId === studentId),
@@ -225,11 +230,13 @@ export async function recordMissionCompletionAsync(
   locationId: number,
   selectedAnswers: Record<string, OptionLetter>,
   timeSpentSeconds: number,
+  run?: MissionRun,
 ): Promise<{
   updatedStudent: StudentProfile;
   allStudents: StudentProfile[];
   summary: MissionResultSummary;
 }> {
+  if (run && (run.studentId !== studentId || run.mode !== mode || run.locationId !== locationId)) throw new Error('Konteks misi tidak sesuai.');
   const result = recordMissionCompletion(
     studentId,
     mode,
@@ -243,7 +250,9 @@ export async function recordMissionCompletionAsync(
   try {
     const saveRes = await saveGameAttempt({
       studentId: result.updatedStudent.id,
-      authUserId: result.updatedStudent.authUserId || undefined,
+      authUserId: run?.authUserId || result.updatedStudent.authUserId || undefined,
+      sessionId: run?.sessionId,
+      idempotencyKey: run?.idempotencyKey,
       mode,
       levelNumber,
       locationId,
@@ -314,7 +323,9 @@ export function getActiveStudentId(): string | null {
 
 export function setActiveGameMode(mode: GameMode): void {
   try {
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_MODE, mode);
+    const parsed = parseGameMode(mode);
+    if (!parsed) return;
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_MODE, parsed);
   } catch {
     // ignore
   }
@@ -323,7 +334,7 @@ export function setActiveGameMode(mode: GameMode): void {
 export function getActiveGameMode(): GameMode {
   try {
     const val = localStorage.getItem(STORAGE_KEYS.ACTIVE_MODE);
-    return val === 'championship' ? 'championship' : 'solo';
+    return parseGameMode(val) || 'solo';
   } catch {
     return 'solo';
   }

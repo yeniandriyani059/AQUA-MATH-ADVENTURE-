@@ -1,3 +1,4 @@
+import { parseGameMode, validSessionId } from './championshipContract';
 import { createAttemptSync } from './attemptSync';
 import { getTeacherAccessToken } from './teacherSession';
 import {
@@ -547,25 +548,16 @@ export async function getActiveChampionshipSession(): Promise<{ id: string; sess
       .select('id, session_name, is_active, created_at')
       .eq('is_active', true)
       .order('created_at', { ascending: false })
-      .limit(1)
+      .limit(2)
       .maybeSingle();
 
-    if (!error && data && data.id) {
+    if (!error && data && validSessionId(data.id)) {
       try {
         localStorage.setItem('aqua_math_active_championship_session_id', String(data.id));
       } catch {
         // ignore
       }
       return { id: String(data.id), session_name: String(data.session_name || 'Class Championship') };
-    }
-  } catch {
-    // ignore
-  }
-
-  try {
-    const cachedId = localStorage.getItem('aqua_math_active_championship_session_id');
-    if (cachedId && isValidUuid(cachedId)) {
-      return { id: cachedId, session_name: 'Class Championship' };
     }
   } catch {
     // ignore
@@ -687,10 +679,10 @@ export function applySupabaseAttemptsAndProgressToProfile(
     for (const row of effectiveAttempts) {
       const locId = Number(row.location_id);
       if (!locId || locId < 1 || locId > 10) continue;
-      const modeUpper = String(row.mode || '').toUpperCase();
-      const isChamp =
-        modeUpper === 'CHAMPIONSHIP' ||
-        (row.id && champModeAttemptIds.has(String(row.id)));
+      const mode = parseGameMode(row.mode);
+      if (!mode || (mode === 'solo' && (row.session_id != null || champModeAttemptIds.has(String(row.id)))) ||
+        (mode === 'championship' && !validSessionId(row.session_id))) continue;
+      const isChamp = mode === 'championship';
       const score = Number(row.score ?? Number(row.correct_count || 0) * 10);
       const correctCount = Number(row.correct_count || 0);
       const duration = Number(row.duration_seconds || 0);
@@ -739,7 +731,8 @@ export function applySupabaseAttemptsAndProgressToProfile(
   let dbChampUnlockedLevel = 1;
 
   for (const progRow of effectiveProgress) {
-    const progMode = String(progRow?.mode || 'SOLO').toUpperCase();
+    const progMode = parseGameMode(progRow?.mode);
+    if (!progMode) continue;
     const progUnlocked = Math.max(1, Math.min(5, Number(progRow?.unlocked_level || 1)));
     const completedLocs: number[] = Array.isArray(progRow?.completed_locations)
       ? progRow.completed_locations
@@ -747,7 +740,7 @@ export function applySupabaseAttemptsAndProgressToProfile(
           .filter((n: number) => n >= 1 && n <= 10)
       : [];
 
-    if (progMode === 'CHAMPIONSHIP') {
+    if (progMode === 'championship') {
       dbChampUnlockedLevel = Math.max(dbChampUnlockedLevel, progUnlocked);
       for (const locId of completedLocs) {
         if (!champLocs[locId]) {
@@ -845,7 +838,7 @@ async function syncVerifiedSupabaseProgressToStudentProfileRow(
     clientToUse
       .from('game_attempts')
       .select(
-        'id, student_id, mode, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
+        'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
       )
       .eq('student_id', studentProfileId)
       .order('completed_at', { ascending: true }),
@@ -915,7 +908,7 @@ export async function hydrateStudentProgressFromSupabase(
       clientToUse
         .from('game_attempts')
         .select(
-          'id, student_id, mode, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
+          'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
         )
         .in('student_id', candidateIds)
         .order('completed_at', { ascending: true }),
@@ -1684,9 +1677,7 @@ export function saveGameAttempt(params: SaveGameAttemptParams): Promise<SaveGame
   const existing = pendingSaveRequests.get(key);
   if (existing) return existing;
   const task = (async () => {
-    const sessionId = params.mode === 'championship' && !params.sessionId
-      ? (await getActiveChampionshipSession())?.id || null : params.sessionId;
-    return attemptSync.save({ ...params, sessionId });
+    return attemptSync.save(params);
   })();
   pendingSaveRequests.set(key, task);
   void task.finally(() => { if (pendingSaveRequests.get(key) === task) pendingSaveRequests.delete(key); }).catch(() => {});
@@ -1736,7 +1727,7 @@ export async function getSoloBestScore(
         .from('game_attempts')
         .select('score')
         .eq('student_id', studentId)
-        .in('mode', ['solo', 'SOLO']);
+        .in('mode', ['solo', 'SOLO']).is('session_id', null);
 
       if (locationId) {
         query = query.eq('location_id', String(locationId));
@@ -1774,6 +1765,7 @@ export async function getSoloLatestScore(
         .select('score')
         .eq('student_id', studentId)
         .in('mode', ['solo', 'SOLO'])
+        .is('session_id', null)
         .order('completed_at', { ascending: false })
         .limit(1);
 
@@ -1861,7 +1853,7 @@ export async function getTeacherDashboardData(): Promise<{
       supabase
         .from('game_attempts')
         .select(
-          'id, student_id, mode, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
+          'id, student_id, mode, session_id, level_number, location_id, correct_count, wrong_count, score, duration_seconds, attempt_number, completed_at, created_at',
         )
         .order('completed_at', { ascending: true }),
       supabase

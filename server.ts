@@ -1,3 +1,4 @@
+import { confirmAttempt, validSessionId } from './src/services/championshipContract';
 import express from 'express';
 import { getSupabaseClient as defaultGetClient, verifyTeacher } from './backend/auth';
 import path from 'path';
@@ -431,7 +432,7 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
         !Number.isFinite(durationSeconds) || durationSeconds < 0 || levelNumber !== Math.ceil(locationId / 2))
         return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Hasil permainan tidak valid.' });
       if (mode === 'championship') {
-        if (typeof sessionId !== 'string') return void res.status(400).json({ ok: false, syncedToSupabase: false });
+        if (!validSessionId(sessionId)) return void res.status(400).json({ ok: false, syncedToSupabase: false });
         const { data: session, error: sessionError } = await sb.from('championship_sessions').select('id, is_active').eq('id', sessionId).eq('is_active', true).maybeSingle();
         if (sessionError || !session?.is_active) return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Sesi Championship tidak aktif.' });
       }
@@ -444,6 +445,9 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
       const confirmedAttemptId = typeof attempt === 'string' ? attempt : attempt?.attempt_id || attempt?.id;
       if (attemptError || typeof confirmedAttemptId !== 'string' || !confirmedAttemptId || attempt?.ok === false || attempt?.success === false || (attempt?.student_id && attempt.student_id !== res.locals.student.id))
         return void res.status(500).json({ ok: false, syncedToSupabase: false, message: 'Database belum mengonfirmasi penyimpanan.' });
+
+      if (!await confirmAttempt(sb, confirmedAttemptId, res.locals.student.id, mode, sessionId))
+        return void res.status(409).json({ ok: false, syncedToSupabase: false, message: 'Mode atau sesi hasil database tidak sesuai; jangan mengirim ulang sebelum diperiksa.' });
 
       res.json({
         ok: true,
