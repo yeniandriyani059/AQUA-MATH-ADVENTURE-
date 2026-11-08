@@ -1778,6 +1778,14 @@ export async function getTeacherDashboardData(client = supabase): Promise<{
 /**
  * 9. requestTeacherPasswordReset(email)
  */
+export function teacherRecoveryRedirect(href: string): string | null {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) return null;
+    return url.origin + '/';
+  } catch { return null; }
+}
+
 export async function requestTeacherPasswordReset(
   email: string,
 ): Promise<{ ok: boolean; message: string }> {
@@ -1796,9 +1804,12 @@ export async function requestTeacherPasswordReset(
     };
   }
 
+  const redirectTo = typeof window !== 'undefined' ? teacherRecoveryRedirect(window.location.href) : null;
+  if (!redirectTo) return { ok: false, message: 'Buka aplikasi melalui alamat browser yang valid untuk memulihkan password.' };
+
   try {
     const { error } = await supabase.auth.resetPasswordForEmail(cleanedEmail, {
-      redirectTo: 'https://aqua-adventure-nine.vercel.app',
+      redirectTo,
     });
 
     if (error) {

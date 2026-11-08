@@ -1,4 +1,4 @@
-import type { GameMode } from '../types/game';
+import type { GameMode } from '../types/game.js';
 
 export function parseGameMode(value: unknown): GameMode | null {
   if (typeof value !== 'string') return null;

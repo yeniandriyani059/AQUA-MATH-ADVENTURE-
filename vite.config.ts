@@ -1,3 +1,4 @@
+import { validatePreviewEnvironment } from './scripts/preview-safety.mjs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -5,6 +6,7 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
+  validatePreviewEnvironment(process.env);
   return {
     plugins: [
       react(),
@@ -17,7 +19,7 @@ export default defineConfig(() => {
         workbox: {
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff2}'],
-          navigateFallbackDenylist: [/^\/api\//, /^https:\/\/.*\.supabase\.co\//],
+          navigateFallbackDenylist: [/^\/api(?:\/|$)/, /^https:\/\/.*\.supabase\.co\//],
         },
         manifest: {
           id: '/',
