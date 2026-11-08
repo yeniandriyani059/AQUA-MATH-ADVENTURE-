@@ -423,7 +423,7 @@ export function isVerifiedTeacherAuthUser(user: any): boolean {
 
 /**
  * Verifies that the active Supabase session belongs to a real authenticated Teacher (non-anonymous, valid email)
- * AND ensures that a corresponding row exists in `public.teacher_profiles` with `auth_user_id = auth.uid()` and `role = 'teacher'`.
+ * AND requires that a corresponding row already exists in `public.teacher_profiles` with `auth_user_id = auth.uid()` and `role = 'teacher'`.
  * Never signs out or overwrites the active teacher session.
  */
 export async function ensureVerifiedTeacherSessionAndProfile(): Promise<VerifiedTeacherProfileSession> {
@@ -468,64 +468,16 @@ export async function ensureVerifiedTeacherSessionAndProfile(): Promise<Verified
       .eq('auth_user_id', teacherUid)
       .maybeSingle();
 
-    if (!selectErr && existingProfile) {
-      if (String(existingProfile.role || '').trim().toLowerCase() !== 'teacher') {
-        await supabase
-          .from('teacher_profiles')
-          .update({ role: 'teacher' })
-          .eq('auth_user_id', teacherUid);
-      }
-      return {
-        ok: true,
-        teacherUserId: teacherUid,
-        teacherEmail,
-        teacherDisplayName: existingProfile.display_name || fallbackName,
-      };
+    if (selectErr || !existingProfile || existingProfile.role !== 'teacher') {
+      return { ok: false, message: 'Profil guru berwenang belum tersedia. Hubungi pengelola.' };
     }
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    if (!token) return { ok: false, message: 'Sesi guru tidak tersedia.' };
+    const response = await fetch('/api/admin/verify', { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok || !(await response.json()).ok) return { ok: false, message: 'Guru belum diberi kewenangan.' };
+    return { ok: true, teacherUserId: teacherUid, teacherEmail, teacherDisplayName: existingProfile.display_name || fallbackName };
 
-    // Auto-create/sync missing teacher_profiles row using valid UUID `id: teacherUid`
-    const payload = buildTeacherProfilePayload({
-      authUserId: teacherUid,
-      displayName: fallbackName,
-      createdAt: user.created_at || new Date().toISOString(),
-    });
-
-    const { data: upsertedByAuth, error: errByAuth } = await supabase
-      .from('teacher_profiles')
-      .upsert(payload, { onConflict: 'auth_user_id' })
-      .select('id, auth_user_id, display_name, role, created_at')
-      .maybeSingle();
-
-    if (!errByAuth && upsertedByAuth) {
-      return {
-        ok: true,
-        teacherUserId: teacherUid,
-        teacherEmail,
-        teacherDisplayName: upsertedByAuth.display_name || fallbackName,
-      };
-    }
-
-    const { data: upsertedById, error: errById } = await supabase
-      .from('teacher_profiles')
-      .upsert(payload, { onConflict: 'id' })
-      .select('id, auth_user_id, display_name, role, created_at')
-      .maybeSingle();
-
-    if (!errById && upsertedById) {
-      return {
-        ok: true,
-        teacherUserId: teacherUid,
-        teacherEmail,
-        teacherDisplayName: upsertedById.display_name || fallbackName,
-      };
-    }
-
-    const syncErrMsg =
-      (errById || errByAuth || selectErr)?.message || 'Gagal menyinkronkan teacher_profiles.';
-    return {
-      ok: false,
-      message: `Profil guru pada tabel teacher_profiles belum terdaftar dan gagal disinkronkan (${syncErrMsg}). Pastikan akun guru memiliki profil aktif di public.teacher_profiles dengan role='teacher'.`,
-    };
   } catch (err: any) {
     return {
       ok: false,
@@ -2962,37 +2914,12 @@ export async function updateTeacherNewPassword(
     } else if (existingProfile) {
       resolvedTeacherName = existingProfile.display_name || resolvedTeacherName;
     } else {
-      const newProfilePayload = buildTeacherProfilePayload({
-        authUserId: updatedUser.id,
-        displayName: resolvedTeacherName,
-        createdAt: updatedUser.created_at || now,
-      });
-
-      const { data: insertedProfile, error: insertErr } = await supabase
-        .from('teacher_profiles')
-        .upsert(newProfilePayload, { onConflict: 'auth_user_id' })
-        .select('id, auth_user_id, display_name, role, created_at')
-        .maybeSingle();
-
-      if (insertErr) {
-        const { data: fallbackProfile, error: fallbackErr } = await supabase
-          .from('teacher_profiles')
-          .upsert(newProfilePayload, { onConflict: 'id' })
-          .select('id, auth_user_id, display_name, role, created_at')
-          .maybeSingle();
-        if (fallbackErr) {
-          profileSyncWarning = `Password berhasil diperbarui, namun sinkronisasi profil teacher_profiles mengalami kendala: ${fallbackErr.message}`;
-        } else if (fallbackProfile?.display_name) {
-          resolvedTeacherName = fallbackProfile.display_name;
-        }
-      } else if (insertedProfile?.display_name) {
-        resolvedTeacherName = insertedProfile.display_name;
-      }
+      profileSyncWarning = 'Profil guru belum tersedia. Hubungi pengelola untuk pemberian kewenangan.';
     }
 
     const { data: sessionData } = await supabase.auth.getSession();
     const activeToken =
-      sessionData?.session?.access_token || `sb_tch_${updatedUser.id}`;
+      sessionData?.session?.access_token || '';
 
     try {
       sessionStorage.setItem('aqua_math_admin_token_v1', activeToken);
