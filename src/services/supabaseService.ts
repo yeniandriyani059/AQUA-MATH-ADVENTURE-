@@ -1,5 +1,8 @@
+import { createAttemptSync } from './attemptSync';
+import { getTeacherAccessToken } from './teacherSession';
 import {
   createEphemeralSupabaseClient,
+  createStudentRequestClient,
   isSupabaseConfigured,
   studentSupabase,
   supabase,
@@ -471,8 +474,7 @@ export async function ensureVerifiedTeacherSessionAndProfile(): Promise<Verified
     if (selectErr || !existingProfile || existingProfile.role !== 'teacher') {
       return { ok: false, message: 'Profil guru berwenang belum tersedia. Hubungi pengelola.' };
     }
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData?.session?.access_token;
+    const token = await getTeacherAccessToken(teacherUid);
     if (!token) return { ok: false, message: 'Sesi guru tidak tersedia.' };
     const response = await fetch('/api/admin/verify', { headers: { Authorization: `Bearer ${token}` } });
     if (!response.ok || !(await response.json()).ok) return { ok: false, message: 'Guru belum diberi kewenangan.' };
@@ -516,166 +518,6 @@ function createEphemeralAuthClient() {
  * Creates or signs into a Student Auth account in Supabase Auth using an isolated client
  * (without affecting the Teacher's active session) and returns the real `auth.users.id` UUID.
  */
-async function ensureStudentAuthUserIsolated(params: {
-  username: string;
-  password: string;
-  displayName: string;
-  character: 'BIMA' | 'SINTA';
-}): Promise<{ ok: boolean; authUserId?: string; message?: string }> {
-  const normUsername = normalizeStudentUsername(params.username);
-  if (!normUsername || normUsername.length < 3) {
-    return { ok: false, message: 'Username siswa minimal 3 karakter huruf/angka.' };
-  }
-  const internalEmail = studentUsernameToInternalEmail(normUsername);
-
-  // Check if this matches one of the 14 pre-verified accounts first
-  const officialSpec = findOfficialStudentSpec({ username: normUsername });
-
-  const ephemeral = createEphemeralAuthClient();
-  if (!ephemeral) {
-    if (officialSpec) {
-      return { ok: true, authUserId: officialSpec.authUserId };
-    }
-    return { ok: false, message: 'Supabase belum terkonfigurasi.' };
-  }
-
-  try {
-    // 1. Try signing in first in case the account already exists in auth.users
-    const { data: signInData, error: signInErr } = await ephemeral.auth.signInWithPassword({
-      email: internalEmail,
-      password: params.password,
-    });
-
-    if (!signInErr && signInData?.user?.id) {
-      return { ok: true, authUserId: signInData.user.id };
-    }
-
-    // 2. If not yet registered, sign up in Supabase Auth
-    const { data: signUpData, error: signUpErr } = await ephemeral.auth.signUp({
-      email: internalEmail,
-      password: params.password,
-      options: {
-        data: {
-          username: normUsername,
-          display_name: params.displayName,
-          name: params.displayName,
-          character: params.character,
-          role: 'student',
-        },
-      },
-    });
-
-    if (!signUpErr && signUpData?.user?.id) {
-      return { ok: true, authUserId: signUpData.user.id };
-    }
-
-    // 3. If user already exists in auth.users and matches one of the 14 official accounts
-    if (officialSpec) {
-      return { ok: true, authUserId: officialSpec.authUserId };
-    }
-
-    return {
-      ok: false,
-      message:
-        signUpErr?.message ||
-        signInErr?.message ||
-        'Gagal menyiapkan akun autentikasi siswa di Supabase Auth.',
-    };
-  } catch (e: any) {
-    if (officialSpec) {
-      return { ok: true, authUserId: officialSpec.authUserId };
-    }
-    return { ok: false, message: e?.message || 'Kesalahan jaringan ke Supabase Auth.' };
-  }
-}
-
-/**
- * Inserts or updates a student row in public.student_profiles using a real auth_user_id UUID
- * and omitting `id` and `created_at` so PostgreSQL defaults apply.
- */
-async function upsertStudentProfileWithRealAuthId(params: {
-  authUserId: string;
-  displayName: string;
-  characterId: CharacterId | string;
-  isActive?: boolean;
-}): Promise<{ data: any | null; error: any | null }> {
-  if (!isSupabaseConfigured || !supabase) {
-    return { data: null, error: new Error('Supabase belum terkonfigurasi.') };
-  }
-
-  const payload = buildStudentProfileInsertPayload({
-    authUserId: params.authUserId,
-    displayName: params.displayName,
-    characterId: params.characterId,
-    isActive: params.isActive ?? true,
-  });
-
-  const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
-
-  // 1. Check if a row with this auth_user_id already exists
-  const { data: existingByAuth } = await supabase
-    .from('student_profiles')
-    .select(selectCols)
-    .eq('auth_user_id', payload.auth_user_id)
-    .maybeSingle();
-
-  if (existingByAuth) {
-    const { data: updated, error: updateErr } = await supabase
-      .from('student_profiles')
-      .update({
-        display_name: payload.display_name,
-        character: payload.character,
-        is_active: payload.is_active,
-      })
-      .eq('id', existingByAuth.id)
-      .select(selectCols)
-      .maybeSingle();
-
-    return { data: updated || existingByAuth, error: updateErr };
-  }
-
-  // 2. Check if a row with the same display_name exists without auth_user_id
-  const { data: existingByName } = await supabase
-    .from('student_profiles')
-    .select(selectCols)
-    .ilike('display_name', payload.display_name)
-    .maybeSingle();
-
-  if (existingByName) {
-    const { data: updated, error: updateErr } = await supabase
-      .from('student_profiles')
-      .update({
-        auth_user_id: payload.auth_user_id,
-        display_name: payload.display_name,
-        character: payload.character,
-        is_active: payload.is_active,
-      })
-      .eq('id', existingByName.id)
-      .select(selectCols)
-      .maybeSingle();
-
-    if (!updateErr && updated) {
-      return { data: updated, error: null };
-    }
-  }
-
-  // 3. Insert new row omitting `id` and `created_at` so database defaults apply
-  const { data: inserted, error: insertErr } = await supabase
-    .from('student_profiles')
-    .insert(payload)
-    .select(selectCols)
-    .single();
-
-  if (!insertErr && inserted) {
-    return { data: inserted, error: null };
-  }
-
-  return {
-    data: null,
-    error: new Error(formatStudentInsertError(insertErr)),
-  };
-}
-
 /**
  * Synchronizes all 14 official Class 5 student accounts between auth.users and public.student_profiles.
  */
@@ -687,112 +529,8 @@ export async function syncOfficial14StudentAccounts(): Promise<{
   rlsBlocked: boolean;
   message: string;
 }> {
-  // Try server-side Admin API first if SUPABASE_SERVICE_ROLE_KEY is configured on server
-  try {
-    const token =
-      sessionStorage.getItem('aqua_math_admin_token_v1') ||
-      sessionStorage.getItem('aqua_admin_token') ||
-      '';
-    const res = await fetch('/api/admin/provision-students', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ students: OFFICIAL_14_STUDENTS }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.ok && Array.isArray(data.students) && data.students.length > 0) {
-        const mapped = data.students.map((row: any) => mapDbRowToStudentProfile(row));
-        return {
-          ok: true,
-          syncedCount: mapped.length,
-          authReadyCount: 14,
-          students: mapped,
-          rlsBlocked: false,
-          message:
-            data.message ||
-            'Berhasil menyinkronkan 14 akun siswa Kelas 5 di auth.users dan public.student_profiles!',
-        };
-      }
-    }
-  } catch {
-    // Fallback to client-side Teacher session sync
-  }
-
-  if (!isSupabaseConfigured || !supabase) {
-    return {
-      ok: false,
-      syncedCount: 0,
-      authReadyCount: 14,
-      students: [],
-      rlsBlocked: false,
-      message: 'Koneksi Supabase belum aktif.',
-    };
-  }
-
-  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
-  if (!teacherCheck.ok) {
-    return {
-      ok: false,
-      syncedCount: 0,
-      authReadyCount: 14,
-      students: [],
-      rlsBlocked: false,
-      message: teacherCheck.message || 'Sesi guru tidak terverifikasi.',
-    };
-  }
-
-  const payloads: StudentProfileDbInsertPayload[] = OFFICIAL_14_STUDENTS.map((spec) =>
-    buildStudentProfileInsertPayload({
-      authUserId: spec.authUserId,
-      displayName: spec.displayName,
-      characterId: spec.characterId,
-      isActive: true,
-    }),
-  );
-
-  const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
-  const { data: upsertedRows, error: upsertErr } = await supabase
-    .from('student_profiles')
-    .upsert(payloads, { onConflict: 'auth_user_id' })
-    .select(selectCols);
-
-  if (!upsertErr && Array.isArray(upsertedRows)) {
-    const mapped = upsertedRows.map((row) => mapDbRowToStudentProfile(row));
-    return {
-      ok: true,
-      syncedCount: mapped.length,
-      authReadyCount: 14,
-      students: mapped,
-      rlsBlocked: false,
-      message: `Berhasil menyinkronkan ${mapped.length} profil siswa Kelas 5 ke tabel public.student_profiles!`,
-    };
-  }
-
-  const errMsg = formatStudentInsertError(upsertErr);
-  const isRls =
-    String(upsertErr?.code || '') === '42501' ||
-    String(upsertErr?.message || '').toLowerCase().includes('row-level security');
-
-  return {
-    ok: false,
-    syncedCount: 0,
-    authReadyCount: 14,
-    students: OFFICIAL_14_STUDENTS.map((spec) =>
-      mapDbRowToStudentProfile({
-        id: spec.authUserId,
-        auth_user_id: spec.authUserId,
-        display_name: spec.displayName,
-        character: spec.character,
-        username: spec.username,
-        is_active: true,
-      }),
-    ),
-    rlsBlocked: isRls,
-    message: `Ke-14 akun siswa SUDAH AKTIF di Supabase Auth (auth.users), namun sinkronisasi ke tabel public.student_profiles memerlukan izin RLS Guru: ${errMsg}`,
-  };
+  return { ok: false, syncedCount: 0, authReadyCount: 0, students: [], rlsBlocked: false,
+    message: 'Provisioning siswa belum tersedia sampai mekanisme administratif yang aman disetujui.' };
 }
 
 /**
@@ -1223,6 +961,7 @@ export async function hydrateStudentProgressFromSupabase(
 }
 
 export interface SaveGameAttemptParams {
+  authUserId?: string;
   studentId: string;
   mode: GameMode;
   levelNumber: number; // 1 to 5
@@ -1247,39 +986,33 @@ export interface SaveGameAttemptResult {
 export interface PendingSyncAttempt extends SaveGameAttemptParams {
   timestamp: number;
   score: number;
+  syncState?: 'pending' | 'sending' | 'uncertain';
 }
 
 const OFFLINE_QUEUE_KEY = 'aqua_math_offline_attempts_queue_v1';
 
-// Idempotency cache to prevent duplicate in-memory or rapid double clicks
-const processedKeysCache = new Set<string>();
+const attemptSync = createAttemptSync({
+  storage: () => localStorage,
+  context: async () => {
+    const { data, error } = await studentSupabase!.auth.getSession();
+    const session = data?.session;
+    if (error || !session?.access_token || !session.user?.id || session.user.is_anonymous) return null;
+    if (!session.expires_at || session.expires_at * 1000 <= Date.now()) return null;
+    const client = createStudentRequestClient(session.access_token);
+    const { data: profile, error: profileError } = await client.from('student_profiles')
+      .select('id, auth_user_id, is_active').eq('auth_user_id', session.user.id).maybeSingle();
+    if (profileError || !profile?.id || profile.auth_user_id !== session.user.id || profile.is_active !== true) return null;
+    return { authUserId: session.user.id, studentId: profile.id, client };
+  },
+  onConfirmed: async (context, item, id) => {
+    const synced = await syncVerifiedSupabaseProgressToStudentProfileRow(context.client, context.studentId, item.mode === 'championship' ? id : undefined);
+    const { data: row } = await context.client.from('student_profiles').select('*').eq('id', context.studentId).maybeSingle();
+    if (!row) return {};
+    return { updatedProfile: applySupabaseAttemptsAndProgressToProfile(mapDbRowToStudentProfile(row), synced.attemptsRows, synced.progressRows, synced.championshipSnapshot) };
+  },
+});
 
-/**
- * Gets offline attempts queued when internet/Supabase was disconnected.
- */
-export function getOfflineSyncQueue(): PendingSyncAttempt[] {
-  try {
-    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Saves an attempt to local queue when Supabase RPC is unavailable or offline.
- */
-function queueAttemptLocally(attempt: PendingSyncAttempt): void {
-  try {
-    const queue = getOfflineSyncQueue();
-    if (!queue.some((q) => q.idempotencyKey === attempt.idempotencyKey)) {
-      queue.push(attempt);
-      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
-    }
-  } catch {
-    // Ignore storage quota errors
-  }
-}
+export function getOfflineSyncQueue(): PendingSyncAttempt[] { return attemptSync.read(); }
 
 /**
  * Returns the active Supabase client for student gameplay operations:
@@ -1345,66 +1078,7 @@ export async function restoreActiveStudentSessionFromSupabase(): Promise<Student
 /**
  * Flushes pending offline sync queue to Supabase when network connection is re-established.
  */
-export async function flushOfflineSyncQueue(): Promise<{
-  syncedCount: number;
-  remainingCount: number;
-}> {
-  const client = await getGameplaySupabaseClient();
-  if (!isSupabaseConfigured || !client) {
-    return { syncedCount: 0, remainingCount: getOfflineSyncQueue().length };
-  }
-
-  const queue = getOfflineSyncQueue();
-  if (queue.length === 0) return { syncedCount: 0, remainingCount: 0 };
-
-  const remaining: PendingSyncAttempt[] = [];
-  let synced = 0;
-
-  for (const item of queue) {
-    try {
-      const requestedMode = item.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
-      let activeSessionId = item.sessionId || null;
-      if (requestedMode === 'CHAMPIONSHIP' && !activeSessionId) {
-        const activeSession = await getActiveChampionshipSession();
-        if (activeSession) activeSessionId = activeSession.id;
-      }
-
-      let { data, error } = await client.rpc('save_game_attempt', {
-        p_mode: requestedMode,
-        p_level_number: item.levelNumber,
-        p_location_id: item.locationId,
-        p_correct_count: item.correctCount,
-        p_wrong_count: item.wrongCount,
-        p_duration_seconds: item.durationSeconds,
-        p_session_id: activeSessionId,
-      });
-
-      if (!error && data) {
-        synced++;
-        const resolvedStudentId = typeof data === 'object' && data?.student_id ? data.student_id : item.studentId;
-        if (resolvedStudentId && isValidUuid(resolvedStudentId)) {
-          await syncVerifiedSupabaseProgressToStudentProfileRow(
-            client,
-            resolvedStudentId,
-            requestedMode === 'CHAMPIONSHIP' && typeof data === 'object' ? data.attempt_id : undefined,
-          ).catch(() => {});
-        }
-      } else {
-        remaining.push(item);
-      }
-    } catch {
-      remaining.push(item);
-    }
-  }
-
-  try {
-    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remaining));
-  } catch {
-    // ignore
-  }
-
-  return { syncedCount: synced, remainingCount: remaining.length };
-}
+export async function flushOfflineSyncQueue() { return attemptSync.flush(); }
 
 /**
  * Verifies class access code and loads active student roster from Supabase student_profiles.
@@ -1590,140 +1264,7 @@ export async function adminAddSingleStudent(
   tempPassword?: string;
   message?: string;
 }> {
-  const cleanedName = String(name || '').trim().replace(/\s+/g, ' ');
-  if (cleanedName.length < 2) {
-    return { ok: false, message: 'Nama siswa minimal 2 huruf.' };
-  }
-
-  const officialSpec = findOfficialStudentSpec({
-    displayName: cleanedName,
-    username: customUsername,
-  });
-
-  const resolvedUsername =
-    normalizeStudentUsername(
-      customUsername ||
-        officialSpec?.username ||
-        cleanedName.split(' ')[0].toLowerCase() +
-          String(Math.floor(10 + Math.random() * 89)),
-    ) || `siswa${Math.floor(100 + Math.random() * 899)}`;
-
-  const resolvedPassword =
-    passwordOrPin && passwordOrPin.trim().length >= 6
-      ? passwordOrPin.trim()
-      : officialSpec?.defaultPassword || `Aqua@${Math.floor(1000 + Math.random() * 8999)}`;
-
-  const resolvedChar = mapCharacterIdToDbCharacter(
-    characterId || officialSpec?.characterId || 'sinta',
-  );
-
-  // 1. Try Server Admin API first (uses SUPABASE_SERVICE_ROLE_KEY if available)
-  try {
-    const token =
-      sessionStorage.getItem('aqua_math_admin_token_v1') ||
-      sessionStorage.getItem('aqua_admin_token') ||
-      '';
-    const res = await fetch('/api/admin/students', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        name: cleanedName,
-        username: resolvedUsername,
-        password: resolvedPassword,
-        characterId: mapDbCharacterToCharacterId(resolvedChar),
-      }),
-    });
-    if (res.ok) {
-      const result = await res.json();
-      if (result.ok && result.student) {
-        const mapped = mapDbRowToStudentProfile({
-          ...result.student,
-          username: resolvedUsername,
-        });
-        mapped.tempPasswordHint = resolvedPassword;
-        return {
-          ok: true,
-          student: mapped,
-          username: resolvedUsername,
-          tempPassword: resolvedPassword,
-          message:
-            result.message ||
-            `Akun siswa "${cleanedName}" (Username: ${resolvedUsername}) berhasil dibuat!`,
-        };
-      }
-    }
-  } catch {
-    // Fallback to client-side isolated Auth + Teacher session insert
-  }
-
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
-      if (!teacherCheck.ok) {
-        return {
-          ok: false,
-          message: teacherCheck.message || 'Sesi guru tidak terverifikasi.',
-        };
-      }
-
-      // 2. Ensure student exists in Supabase Auth (auth.users) using isolated client
-      const authResult = await ensureStudentAuthUserIsolated({
-        username: resolvedUsername,
-        password: resolvedPassword,
-        displayName: cleanedName,
-        character: resolvedChar,
-      });
-
-      if (!authResult.ok || !authResult.authUserId) {
-        return {
-          ok: false,
-          message:
-            authResult.message ||
-            'Gagal membuat akun siswa di Supabase Auth (auth.users).',
-        };
-      }
-
-      // 3. Insert into public.student_profiles with real auth_user_id and default id/created_at
-      const { data: inserted, error: insertErr } = await upsertStudentProfileWithRealAuthId({
-        authUserId: authResult.authUserId,
-        displayName: cleanedName,
-        characterId: resolvedChar,
-        isActive: true,
-      });
-
-      if (!insertErr && inserted) {
-        const mappedStudent = mapDbRowToStudentProfile({
-          ...inserted,
-          username: resolvedUsername,
-        });
-        mappedStudent.tempPasswordHint = resolvedPassword;
-        return {
-          ok: true,
-          student: mappedStudent,
-          username: resolvedUsername,
-          tempPassword: resolvedPassword,
-          message: `Siswa "${cleanedName}" (Username: ${resolvedUsername}, Karakter: ${resolvedChar}) berhasil didaftarkan di Supabase Auth & student_profiles!`,
-        };
-      }
-
-      if (insertErr) {
-        return {
-          ok: false,
-          message: `Akun Auth "${resolvedUsername}" siap (UUID: ${authResult.authUserId}), namun gagal menyimpan ke student_profiles: ${insertErr.message}`,
-        };
-      }
-    } catch (e: any) {
-      return {
-        ok: false,
-        message: e?.message || 'Kesalahan saat menyimpan siswa ke Supabase.',
-      };
-    }
-  }
-
-  return { ok: false, message: 'Koneksi Supabase belum aktif.' };
+  return { ok: false, message: 'Penambahan akun siswa belum tersedia. Tidak ada akun atau profil yang dibuat.' };
 }
 
 /**
@@ -1853,9 +1394,7 @@ export async function adminDeleteStudent(
 
   try {
     const token =
-      sessionStorage.getItem('aqua_math_admin_token_v1') ||
-      sessionStorage.getItem('aqua_admin_token') ||
-      '';
+      (await getTeacherAccessToken()) || '';
     const res = await fetch(`/api/admin/students/${studentId}`, {
       method: 'DELETE',
       headers: {
@@ -2095,46 +1634,7 @@ export async function resetStudentPasswordByTeacher(
   newPassword: string,
   authUserId?: string,
 ): Promise<{ ok: boolean; message?: string }> {
-  if (!newPassword || newPassword.length < 6) {
-    return { ok: false, message: 'Password baru siswa minimal 6 karakter.' };
-  }
-
-  try {
-    const token =
-      sessionStorage.getItem('aqua_math_admin_token_v1') ||
-      sessionStorage.getItem('aqua_admin_token') ||
-      '';
-    const res = await fetch('/api/admin/reset-student-password', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        studentId,
-        authUserId,
-        username: normalizeStudentUsername(username),
-        newPassword,
-      }),
-    });
-    const result = await res.json().catch(() => ({}));
-    if (res.ok && result.ok) {
-      return { ok: true, message: result.message };
-    }
-    return {
-      ok: false,
-      message:
-        result.message ||
-        'Reset password akun Auth siswa memerlukan SUPABASE_SERVICE_ROLE_KEY pada environment server Vercel, atau dapat diubah melalui Supabase Dashboard -> Authentication -> Users.',
-    };
-  } catch (e: any) {
-    return {
-      ok: false,
-      message:
-        e?.message ||
-        'Gagal menghubungi server reset password. Pastikan SUPABASE_SERVICE_ROLE_KEY telah dikonfigurasi di server.',
-    };
-  }
+  return { ok: false, message: 'Reset password siswa belum tersedia sampai mekanisme administratif yang aman disetujui.' };
 }
 
 /**
@@ -2145,63 +1645,7 @@ export async function registerStudentProfile(
   name: string,
   characterId: CharacterId,
 ): Promise<{ profile: StudentProfile | null; error?: string }> {
-  const cleanedName = String(name || '').trim().replace(/\s+/g, ' ');
-  if (cleanedName.length < 2) {
-    return { profile: null, error: 'Nama siswa minimal 2 huruf.' };
-  }
-
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const selectCols = 'id, auth_user_id, display_name, character, is_active, created_at';
-
-      const { data: existingList, error: selectErr } = await supabase
-        .from('student_profiles')
-        .select(selectCols)
-        .ilike('display_name', cleanedName)
-        .limit(1);
-
-      const existing =
-        !selectErr && existingList && existingList.length > 0 ? existingList[0] : null;
-
-      if (existing) {
-        const resolvedCharId =
-          characterId || mapDbCharacterToCharacterId(existing.character) || 'sinta';
-        const dbChar = mapCharacterIdToDbCharacter(resolvedCharId);
-
-        await supabase
-          .from('student_profiles')
-          .update({
-            character: dbChar,
-            is_active: true,
-          })
-          .eq('id', existing.id);
-
-        const profile = mapDbRowToStudentProfile({
-          ...existing,
-          character: dbChar,
-        });
-
-        return { profile };
-      }
-
-      const official = findOfficialStudentSpec({ displayName: cleanedName });
-      if (official) {
-        const { data: inserted, error: insertErr } = await upsertStudentProfileWithRealAuthId({
-          authUserId: official.authUserId,
-          displayName: official.displayName,
-          characterId: characterId || official.characterId,
-          isActive: true,
-        });
-        if (!insertErr && inserted) {
-          return { profile: mapDbRowToStudentProfile(inserted) };
-        }
-      }
-    } catch (e: any) {
-      console.warn('Supabase registerStudentProfile network fallback:', e?.message);
-    }
-  }
-
-  return { profile: null, error: 'Profil siswa belum ditemukan di student_profiles' };
+  return { profile: null, error: 'Pendaftaran profil belum tersedia. Gunakan login akun siswa yang sudah ada.' };
 }
 
 /**
@@ -2232,159 +1676,21 @@ export async function getStudentProfile(studentId: string): Promise<StudentProfi
  * guarantees writes to `public.game_attempts` and `public.game_progress` using `student_profiles.id`,
  * and syncs verified Supabase progress back to `student_profiles.championship_data`.
  */
-export async function saveGameAttempt(
-  params: SaveGameAttemptParams,
-): Promise<SaveGameAttemptResult> {
-  const score = Math.min(100, Math.max(0, params.correctCount * 10));
-
-  const key =
-    params.idempotencyKey ||
-    `att_${params.studentId}_${params.mode}_${params.locationId}_${params.correctCount}_${Math.floor(
-      Date.now() / 5000,
-    )}`;
-
-  if (processedKeysCache.has(key)) {
-    return {
-      success: true,
-      score,
-      syncedToSupabase: true,
-      message: 'Percobaan telah tersimpan (Idempotent call)',
-    };
-  }
-
-  processedKeysCache.add(key);
-  setTimeout(() => processedKeysCache.delete(key), 10000);
-
-  const pendingAttempt: PendingSyncAttempt = {
-    ...params,
-    idempotencyKey: key,
-    timestamp: Date.now(),
-    score,
-  };
-
-  const client = await getGameplaySupabaseClient();
-  if (!isSupabaseConfigured || !client) {
-    queueAttemptLocally(pendingAttempt);
-    return {
-      success: true,
-      score,
-      syncedToSupabase: false,
-      message:
-        'Sesi login siswa Supabase belum aktif. Silakan login kembali menggunakan Username & Password siswa agar nilai tersimpan ke database.',
-    };
-  }
-
-  try {
-    // Verify student Auth session & resolve canonical student_profiles.id
-    const { data: sessData } = await client.auth.getSession();
-    const authUser = sessData?.session?.user;
-    if (!authUser || !authUser.id) {
-      queueAttemptLocally(pendingAttempt);
-      return {
-        success: true,
-        score,
-        syncedToSupabase: false,
-        message: 'Sesi autentikasi siswa berakhir. Silakan login kembali.',
-      };
-    }
-
-    const { data: profileRow } = await client
-      .from('student_profiles')
-      .select('id, auth_user_id, display_name, character, is_active, created_at, championship_data')
-      .eq('auth_user_id', authUser.id)
-      .maybeSingle();
-
-    const canonicalStudentId = profileRow?.id || params.studentId;
-    const requestedMode = params.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
-
-    let activeSessionId = params.sessionId || null;
-    if (requestedMode === 'CHAMPIONSHIP' && !activeSessionId) {
-      const activeSession = await getActiveChampionshipSession();
-      if (activeSession) {
-        activeSessionId = activeSession.id;
-      }
-    }
-
-    if (requestedMode === 'CHAMPIONSHIP' && (!activeSessionId || !isValidUuid(activeSessionId))) {
-      queueAttemptLocally(pendingAttempt);
-      return {
-        success: false,
-        score,
-        syncedToSupabase: false,
-        message:
-          'Sesi Class Championship belum dibuka oleh Guru di database (championship_sessions). Silakan hubungi Guru.',
-      };
-    }
-
-    // 1. Primary RPC call: save_game_attempt (uses auth.uid() from studentSupabase session)
-    const { data: rpcData, error: rpcError } = await client.rpc('save_game_attempt', {
-      p_mode: requestedMode,
-      p_level_number: params.levelNumber,
-      p_location_id: params.locationId,
-      p_correct_count: params.correctCount,
-      p_wrong_count: params.wrongCount,
-      p_duration_seconds: params.durationSeconds,
-      p_session_id: activeSessionId,
-    });
-
-    if (!rpcError && rpcData) {
-      const attemptId =
-        typeof rpcData === 'string'
-          ? rpcData
-          : rpcData?.attempt_id || rpcData?.id || undefined;
-      const resolvedStudentId =
-        (typeof rpcData === 'object' && rpcData?.student_id) || canonicalStudentId;
-
-      // Sync verified game_attempts & game_progress rows from Supabase and build hydrated profile
-      let updatedProfile: StudentProfile | undefined;
-      if (resolvedStudentId && isValidUuid(resolvedStudentId)) {
-        const synced = await syncVerifiedSupabaseProgressToStudentProfileRow(
-          client,
-          resolvedStudentId,
-          requestedMode === 'CHAMPIONSHIP' ? attemptId : undefined,
-        );
-        if (profileRow) {
-          const base = mapDbRowToStudentProfile({
-            ...profileRow,
-            id: resolvedStudentId,
-          });
-          base.authUserId = authUser.id;
-          updatedProfile = applySupabaseAttemptsAndProgressToProfile(
-            base,
-            synced.attemptsRows,
-            synced.progressRows,
-            synced.championshipSnapshot,
-          );
-        }
-      }
-
-      return {
-        success: true,
-        score,
-        syncedToSupabase: true,
-        message: 'Skor dan progres berhasil tersimpan di database Supabase (game_attempts & game_progress)!',
-        attemptId,
-        studentId: resolvedStudentId,
-        updatedProfile,
-      };
-    }
-
-    queueAttemptLocally(pendingAttempt);
-    return {
-      success: true,
-      score,
-      syncedToSupabase: false,
-      message: `Gagal menyimpan ke Supabase: ${rpcError?.message || 'Unknown error'}`,
-    };
-  } catch (e: any) {
-    queueAttemptLocally(pendingAttempt);
-    return {
-      success: true,
-      score,
-      syncedToSupabase: false,
-      message: `Tersimpan secara lokal (Jaringan terputus: ${e?.message || 'Offline'})`,
-    };
-  }
+const pendingSaveRequests = new Map<string, Promise<SaveGameAttemptResult>>();
+export function saveGameAttempt(params: SaveGameAttemptParams): Promise<SaveGameAttemptResult> {
+  // Include session resolution in the same in-flight operation as the write.
+  const key = JSON.stringify([params.authUserId, params.studentId, params.idempotencyKey, params.mode,
+    params.sessionId, params.levelNumber, params.locationId, params.correctCount, params.wrongCount, params.durationSeconds]);
+  const existing = pendingSaveRequests.get(key);
+  if (existing) return existing;
+  const task = (async () => {
+    const sessionId = params.mode === 'championship' && !params.sessionId
+      ? (await getActiveChampionshipSession())?.id || null : params.sessionId;
+    return attemptSync.save({ ...params, sessionId });
+  })();
+  pendingSaveRequests.set(key, task);
+  void task.finally(() => { if (pendingSaveRequests.get(key) === task) pendingSaveRequests.delete(key); }).catch(() => {});
+  return task;
 }
 
 export const saveAttemptToSupabase = saveGameAttempt;
@@ -2917,15 +2223,7 @@ export async function updateTeacherNewPassword(
       profileSyncWarning = 'Profil guru belum tersedia. Hubungi pengelola untuk pemberian kewenangan.';
     }
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const activeToken =
-      sessionData?.session?.access_token || '';
-
-    try {
-      sessionStorage.setItem('aqua_math_admin_token_v1', activeToken);
-    } catch {
-      // ignore storage quota errors
-    }
+    const activeToken = (await getTeacherAccessToken(updatedUser.id)) || '';
 
     return {
       ok: true,

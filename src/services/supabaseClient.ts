@@ -55,6 +55,14 @@ export function createEphemeralSupabaseClient(): SupabaseClient | null {
   });
 }
 
+// Immutable request context: switching the shared Auth session cannot change its bearer token.
+export function createStudentRequestClient(accessToken: string) {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
+}
+
 export const SUPABASE_SCHEMA_SQL = `-- AQUA MATH ADVENTURE - RLS & 14 AKUN SISWA KELAS 5 (SUPABASE SQL)
 
 -- 1. Pastikan RLS aktif pada teacher_profiles & student_profiles

@@ -1,3 +1,4 @@
+import { verifyTeacherSession } from './teacherSession';
 import {
   applyMissionResultToProfile,
   createEmptyStudentProfile,
@@ -242,6 +243,7 @@ export async function recordMissionCompletionAsync(
   try {
     const saveRes = await saveGameAttempt({
       studentId: result.updatedStudent.id,
+      authUserId: result.updatedStudent.authUserId || undefined,
       mode,
       levelNumber,
       locationId,
@@ -330,7 +332,7 @@ export function getActiveGameMode(): GameMode {
 /**
  * Authenticates Teacher Admin directly via Supabase Auth (signInWithPassword)
  * and verifies authorization with the backend.
- * Works natively on Vercel static deployments without requiring an Express server.
+ * Requires the authorized backend verification endpoint.
  */
 export async function loginTeacherAdmin(
   usernameOrEmail: string,
@@ -384,18 +386,11 @@ export async function loginTeacherAdmin(
             };
           }
 
-          const sessionToken = authData.session?.access_token;
-          if (!sessionToken) return { ok: false, message: 'Sesi Supabase tidak tersedia.' };
-          const verification = await fetch('/api/admin/verify', {
-            headers: { Authorization: `Bearer ${sessionToken}` },
-          });
-          const verified = await verification.json();
-          if (!verification.ok || !verified.ok) {
-            await supabase.auth.signOut().catch(() => {});
-            return { ok: false, message: 'Akun guru belum diberi kewenangan atau konfigurasi server belum tersedia.' };
+          const verified = await verifyTeacherSession(authUser.id);
+          if (!verified) {
+            return { ok: false, message: 'Sesi guru atau kewenangan backend belum dapat diverifikasi.' };
           }
           const resolvedTeacherName = verified.teacherName || 'Ibu/Bapak Guru';
-          sessionStorage.setItem(STORAGE_KEYS.ADMIN_TOKEN, sessionToken);
 
           return {
             ok: true,
@@ -437,12 +432,8 @@ export async function registerTeacherAdmin(data: {
   return { ok: false, message: 'Pendaftaran guru memerlukan pemberian kewenangan oleh pengelola.' };
 }
 
-export function isTeacherAdminLoggedIn(): boolean {
-  try {
-    return Boolean(sessionStorage.getItem(STORAGE_KEYS.ADMIN_TOKEN));
-  } catch {
-    return false;
-  }
+export async function isTeacherAdminLoggedIn(): Promise<boolean> {
+  return Boolean(await verifyTeacherSession());
 }
 
 export function logoutTeacherAdmin(): void {

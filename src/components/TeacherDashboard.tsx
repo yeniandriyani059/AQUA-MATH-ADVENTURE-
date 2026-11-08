@@ -62,7 +62,7 @@ import {
   updateTeacherNewPassword,
   verifyTeacherRecoverySession,
 } from '../services/supabaseService';
-import { isSupabaseConfigured, SUPABASE_SCHEMA_SQL } from '../services/supabaseClient';
+import { supabase, isSupabaseConfigured, SUPABASE_SCHEMA_SQL } from '../services/supabaseClient';
 import { CharacterId, ClassSettings, StudentProfile } from '../types/game';
 import { soundManager } from '../utils/sound';
 import { AquaLogoSvg, CharacterAvatarSvg, MedalBadgeSvg } from './AquaLogoSvg';
@@ -86,9 +86,31 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onUpdateStudents,
   onCloseToTitle,
 }) => {
-  const [authenticated, setAuthenticated] = useState<boolean>(
-    initialRecoveryMode ? false : isTeacherAdminLoggedIn(),
-  );
+  const [authenticated, setAuthenticated] = useState<boolean>(false);
+  useEffect(() => {
+    if (initialRecoveryMode) return;
+    let alive = true;
+    let revision = 0;
+    const check = async () => {
+      const current = ++revision;
+      const valid = await isTeacherAdminLoggedIn();
+      if (alive && current === revision) setAuthenticated(valid);
+    };
+    void check();
+    const onFocus = () => { void check(); };
+    window.addEventListener('focus', onFocus);
+    const timer = window.setInterval(onFocus, 30000);
+    const subscription = supabase?.auth.onAuthStateChange(() => {
+      // Supabase Auth callbacks must not await another Auth operation.
+      queueMicrotask(onFocus);
+    });
+    return () => {
+      alive = false;
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(timer);
+      subscription?.data.subscription.unsubscribe();
+    };
+  }, [initialRecoveryMode]);
   const [authTab, setAuthTab] = useState<
     'login' | 'register' | 'forgot_password' | 'update_password'
   >(initialRecoveryMode ? 'update_password' : 'login');
@@ -425,8 +447,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           } else {
             setStatusBanner(res.message);
           }
-          // Directly enter Teacher Dashboard using the verified, active Supabase session
-          setAuthenticated(true);
+          // Password recovery does not itself grant administrative authorization.
+          const authorized = await isTeacherAdminLoggedIn();
+          setAuthenticated(authorized);
+          if (!authorized) {
+            setAuthTab('login');
+            setLoginError('Password diperbarui, tetapi kewenangan guru belum dapat diverifikasi. Silakan login kembali.');
+          }
         } else {
           setLoginError(res.message);
         }
