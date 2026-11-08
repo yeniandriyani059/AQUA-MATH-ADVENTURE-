@@ -27,6 +27,7 @@ import {
 import { MISSION_LOCATIONS } from './data/locations';
 import {
   buildChampionshipLeaderboard,
+  createEmptyStudentProfile,
   isLocationUnlockedForProfile,
 } from './game/rules';
 import {
@@ -237,23 +238,7 @@ export default function App() {
     activeStudent ||
     (students.length > 0 ? students[0] : null) ||
     (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autostart') === '1'
-      ? {
-          id: 'demo-autostart-preview',
-          name: 'Petualang Aqua',
-          characterId: 'bima' as const,
-          createdAt: new Date().toISOString(),
-          solo: {
-            unlockedLevel: 1,
-            bestTotalScore: 30,
-            latestTotalScore: 30,
-            locations: {},
-          },
-          championship: {
-            unlockedLevel: 1,
-            totalChampionshipScore: 30,
-            locations: {},
-          },
-        }
+      ? createEmptyStudentProfile('demo-autostart-preview', 'Petualang Aqua', 'bima')
       : null);
   const unlockedLevel = currentProfile
     ? gameMode === 'solo'
@@ -267,8 +252,8 @@ export default function App() {
           ? currentProfile.solo.locations
           : currentProfile.championship.locations,
       )
-        .filter((l) => l.completed)
-        .map((l) => l.locationId)
+        .filter((l: any) => Boolean(l?.completed))
+        .map((l: any) => l.locationId)
     : [];
 
   const [onboardingTab, setOnboardingTab] = useState<'register' | 'login'>('register');

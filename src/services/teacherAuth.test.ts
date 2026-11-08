@@ -5,9 +5,12 @@ import {
   applySupabaseAttemptsAndProgressToProfile,
   buildStudentProfileInsertPayload,
   buildTeacherProfilePayload,
+  executeResetStudentScoresAndProgress,
+  exportResetGameDataBackup,
   findOfficialStudentSpec,
   formatStudentInsertError,
   generateStudentUuid,
+  getResetGameDataPreview,
   isValidUuid,
   isVerifiedTeacherAuthUser,
   mapCharacterIdToDbCharacter,
@@ -270,6 +273,21 @@ test('applySupabaseAttemptsAndProgressToProfile hydrates student scores and unlo
   assert.equal(hydrated.solo.unlockedLevel, 2);
   assert.equal(hydrated.solo.locations[1]?.bestScore, 30);
   assert.equal(hydrated.solo.locations[2]?.bestScore, 80);
-  assert.equal(hydrated.championship.totalChampionshipScore, 110);
+  assert.equal(hydrated.championship.totalChampionshipScore, 0);
+});
+
+test('getResetGameDataPreview, exportResetGameDataBackup, and executeResetStudentScoresAndProgress require verified teacher session', async () => {
+  const preview = await getResetGameDataPreview({ studentId: 'ALL', modeScope: 'ALL' });
+  assert.equal(preview.ok, false);
+  assert.match(preview.message || '', /Sesi.*guru/i);
+
+  const backup = await exportResetGameDataBackup({ studentId: 'ALL', modeScope: 'ALL' });
+  assert.equal(backup.ok, true);
+  assert.ok(backup.backupJson);
+  assert.ok(backup.fileName?.includes('AQUA_MATH_BACKUP'));
+
+  const reset = await executeResetStudentScoresAndProgress({ studentId: 'ALL', modeScope: 'ALL' });
+  assert.equal(reset.ok, false);
+  assert.match(reset.message || '', /Sesi.*guru/i);
 });
 

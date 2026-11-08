@@ -844,6 +844,111 @@ export async function syncOfficial14StudentAccounts(): Promise<{
 }
 
 /**
+ * Fetches the current active championship session from public.championship_sessions in Supabase.
+ */
+export async function getActiveChampionshipSession(): Promise<{ id: string; session_name: string } | null> {
+  if (!isSupabaseConfigured) return null;
+  const client = (await getGameplaySupabaseClient()) || supabase;
+  if (!client) return null;
+
+  try {
+    const { data, error } = await client
+      .from('championship_sessions')
+      .select('id, session_name, is_active, created_at')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data && data.id) {
+      try {
+        localStorage.setItem('aqua_math_active_championship_session_id', String(data.id));
+      } catch {
+        // ignore
+      }
+      return { id: String(data.id), session_name: String(data.session_name || 'Class Championship') };
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const cachedId = localStorage.getItem('aqua_math_active_championship_session_id');
+    if (cachedId && isValidUuid(cachedId)) {
+      return { id: cachedId, session_name: 'Class Championship' };
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+/**
+ * Ensures an active row exists in public.championship_sessions when Teacher opens/configures Class Championship.
+ * Uses authenticated Teacher session to comply with Row Level Security.
+ */
+export async function ensureActiveChampionshipSession(
+  sessionName = 'Turnamen Penyelamat Air Aqua City',
+): Promise<{ ok: boolean; sessionId?: string; message?: string }> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { ok: false, message: 'Koneksi Supabase belum aktif.' };
+  }
+
+  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
+  if (!teacherCheck.ok || !teacherCheck.teacherUserId) {
+    return { ok: false, message: teacherCheck.message || 'Sesi guru tidak terverifikasi.' };
+  }
+
+  try {
+    const { data: existing, error: selectErr } = await supabase
+      .from('championship_sessions')
+      .select('id, session_name, is_active, created_at')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!selectErr && existing && existing.id) {
+      try {
+        localStorage.setItem('aqua_math_active_championship_session_id', String(existing.id));
+      } catch {
+        // ignore
+      }
+      return { ok: true, sessionId: String(existing.id) };
+    }
+
+    const payload = {
+      session_name: sessionName || 'Turnamen Penyelamat Air Aqua City',
+      is_active: true,
+      created_by: teacherCheck.teacherUserId,
+    };
+
+    const { data: inserted, error: insertErr } = await supabase
+      .from('championship_sessions')
+      .insert(payload)
+      .select('id, session_name, is_active')
+      .single();
+
+    if (!insertErr && inserted && inserted.id) {
+      try {
+        localStorage.setItem('aqua_math_active_championship_session_id', String(inserted.id));
+      } catch {
+        // ignore
+      }
+      return { ok: true, sessionId: String(inserted.id) };
+    }
+
+    return {
+      ok: false,
+      message: `Gagal membuat sesi championship di Supabase: ${insertErr?.message || 'Unknown error'}`,
+    };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Gagal terhubung ke Supabase.' };
+  }
+}
+
+/**
  * Pure helper: Computes a student's Solo & Championship progress strictly from
  * verified Supabase `game_attempts` and `game_progress` rows (never from unverified localStorage).
  */
@@ -901,8 +1006,22 @@ export function applySupabaseAttemptsAndProgressToProfile(
       const duration = Number(row.duration_seconds || 0);
       const playedAt = row.completed_at || row.created_at || new Date().toISOString();
 
-      // Always record in soloLocs if mode is SOLO, and also record in champLocs if played in Championship
-      if (modeUpper === 'SOLO' || !isChamp) {
+      if (isChamp) {
+        const prevChamp = champLocs[locId];
+        const bestChampScore = prevChamp
+          ? Math.max(prevChamp.championshipScore, score)
+          : score;
+        champLocs[locId] = {
+          locationId: locId,
+          completed: true,
+          championshipScore: bestChampScore,
+          correctCount: prevChamp ? Math.max(prevChamp.correctCount, correctCount) : correctCount,
+          timeSpentSeconds: duration,
+          medal: calculateMedal(bestChampScore),
+          completedAt: playedAt,
+        };
+        champTotalTime += duration;
+      } else {
         const prevSolo = soloLocs[locId];
         const bestSoloScore = prevSolo ? Math.max(prevSolo.bestScore, score) : score;
         soloLocs[locId] = {
@@ -921,23 +1040,6 @@ export function applySupabaseAttemptsAndProgressToProfile(
           medal: calculateMedal(bestSoloScore),
           lastPlayedAt: playedAt,
         };
-      }
-
-      if (isChamp) {
-        const prevChamp = champLocs[locId];
-        const bestChampScore = prevChamp
-          ? Math.max(prevChamp.championshipScore, score)
-          : score;
-        champLocs[locId] = {
-          locationId: locId,
-          completed: true,
-          championshipScore: bestChampScore,
-          correctCount: prevChamp ? Math.max(prevChamp.correctCount, correctCount) : correctCount,
-          timeSpentSeconds: duration,
-          medal: calculateMedal(bestChampScore),
-          completedAt: playedAt,
-        };
-        champTotalTime += duration;
       }
     }
   }
@@ -1015,46 +1117,24 @@ export function applySupabaseAttemptsAndProgressToProfile(
     completedLevels: soloUnlocked.completedLevels,
   };
 
-  // For Championship score in Teacher Dashboard & Leaderboard:
-  // If student played in SOLO mode (or Championship fallback), also reflect their official progress if champLocs is empty
-  const hasExplicitChamp = Object.keys(champLocs).length > 0;
-  const effectiveChampLocs: Record<number, ChampionshipLocationRecord> = hasExplicitChamp
-    ? champLocs
-    : Object.fromEntries(
-        Object.entries(soloLocs).map(([k, v]) => [
-          Number(k),
-          {
-            locationId: v.locationId,
-            completed: v.completed,
-            championshipScore: v.bestScore,
-            correctCount: v.bestCorrectCount,
-            timeSpentSeconds: v.bestTimeSeconds,
-            medal: v.medal,
-            completedAt: v.lastPlayedAt,
-          },
-        ]),
-      );
-
-  const champBestTotal = Object.values(effectiveChampLocs).reduce(
+  // Strictly separate Championship score from Solo
+  const champBestTotal = Object.values(champLocs).reduce(
     (acc, l) => acc + (l.championshipScore || 0),
     0,
   );
-  const effectiveChampTime = hasExplicitChamp
-    ? champTotalTime
-    : Object.values(soloLocs).reduce((acc, l) => acc + (l.bestTimeSeconds || 0), 0);
   const champDoneIds = new Set(
-    Object.values(effectiveChampLocs)
+    Object.values(champLocs)
       .filter((l) => l.completed)
       .map((l) => l.locationId),
   );
   const champUnlocked = computeLevelUnlockState(champDoneIds);
 
   profile.championship = {
-    locations: effectiveChampLocs,
+    locations: champLocs,
     totalChampionshipScore: champBestTotal,
     academicGrade: calculateAdventureAcademicGrade(champBestTotal),
-    totalTimeSeconds: effectiveChampTime,
-    unlockedLevel: Math.max(dbChampUnlockedLevel, dbSoloUnlockedLevel, champUnlocked.unlockedLevel),
+    totalTimeSeconds: champTotalTime,
+    unlockedLevel: Math.max(dbChampUnlockedLevel, champUnlocked.unlockedLevel),
     completedLevels: champUnlocked.completedLevels,
   };
 
@@ -1331,6 +1411,12 @@ export async function flushOfflineSyncQueue(): Promise<{
   for (const item of queue) {
     try {
       const requestedMode = item.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
+      let activeSessionId = item.sessionId || null;
+      if (requestedMode === 'CHAMPIONSHIP' && !activeSessionId) {
+        const activeSession = await getActiveChampionshipSession();
+        if (activeSession) activeSessionId = activeSession.id;
+      }
+
       let { data, error } = await client.rpc('save_game_attempt', {
         p_mode: requestedMode,
         p_level_number: item.levelNumber,
@@ -1338,22 +1424,8 @@ export async function flushOfflineSyncQueue(): Promise<{
         p_correct_count: item.correctCount,
         p_wrong_count: item.wrongCount,
         p_duration_seconds: item.durationSeconds,
-        p_session_id: item.sessionId || null,
+        p_session_id: activeSessionId,
       });
-
-      if (error && requestedMode === 'CHAMPIONSHIP') {
-        const retrySolo = await client.rpc('save_game_attempt', {
-          p_mode: 'SOLO',
-          p_level_number: item.levelNumber,
-          p_location_id: item.locationId,
-          p_correct_count: item.correctCount,
-          p_wrong_count: item.wrongCount,
-          p_duration_seconds: item.durationSeconds,
-          p_session_id: null,
-        });
-        data = retrySolo.data;
-        error = retrySolo.error;
-      }
 
       if (!error && data) {
         synced++;
@@ -2273,32 +2345,35 @@ export async function saveGameAttempt(
     const canonicalStudentId = profileRow?.id || params.studentId;
     const requestedMode = params.mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO';
 
+    let activeSessionId = params.sessionId || null;
+    if (requestedMode === 'CHAMPIONSHIP' && !activeSessionId) {
+      const activeSession = await getActiveChampionshipSession();
+      if (activeSession) {
+        activeSessionId = activeSession.id;
+      }
+    }
+
+    if (requestedMode === 'CHAMPIONSHIP' && (!activeSessionId || !isValidUuid(activeSessionId))) {
+      queueAttemptLocally(pendingAttempt);
+      return {
+        success: false,
+        score,
+        syncedToSupabase: false,
+        message:
+          'Sesi Class Championship belum dibuka oleh Guru di database (championship_sessions). Silakan hubungi Guru.',
+      };
+    }
+
     // 1. Primary RPC call: save_game_attempt (uses auth.uid() from studentSupabase session)
-    let { data: rpcData, error: rpcError } = await client.rpc('save_game_attempt', {
+    const { data: rpcData, error: rpcError } = await client.rpc('save_game_attempt', {
       p_mode: requestedMode,
       p_level_number: params.levelNumber,
       p_location_id: params.locationId,
       p_correct_count: params.correctCount,
       p_wrong_count: params.wrongCount,
       p_duration_seconds: params.durationSeconds,
-      p_session_id: params.sessionId || null,
+      p_session_id: activeSessionId,
     });
-
-    // If student selected Championship mode when no active session row exists in championship_sessions,
-    // immediately invoke save_game_attempt with p_mode='SOLO' so game_attempts and game_progress are always written!
-    if (rpcError && requestedMode === 'CHAMPIONSHIP') {
-      const retrySolo = await client.rpc('save_game_attempt', {
-        p_mode: 'SOLO',
-        p_level_number: params.levelNumber,
-        p_location_id: params.locationId,
-        p_correct_count: params.correctCount,
-        p_wrong_count: params.wrongCount,
-        p_duration_seconds: params.durationSeconds,
-        p_session_id: null,
-      });
-      rpcData = retrySolo.data;
-      rpcError = retrySolo.error;
-    }
 
     if (!rpcError && rpcData) {
       const attemptId =
@@ -2939,5 +3014,285 @@ export async function updateTeacherNewPassword(
       ok: false,
       message: err?.message || 'Terjadi kesalahan saat menyimpan password baru.',
     };
+  }
+}
+
+export interface ResetGameDataOptions {
+  studentId?: string | 'ALL';
+  modeScope?: 'ALL' | 'SOLO' | 'CHAMPIONSHIP';
+}
+
+export interface ResetGameDataPreview {
+  targetStudentName: string;
+  gameAttemptsCount: number;
+  gameProgressCount: number;
+  championshipParticipantsCount: number;
+}
+
+/**
+ * Counts the number of game_attempts, game_progress, and championship_participants records
+ * that would be affected by a reset, before actually executing the deletion.
+ */
+export async function getResetGameDataPreview(
+  options: ResetGameDataOptions,
+): Promise<{ ok: boolean; preview?: ResetGameDataPreview; message?: string }> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { ok: false, message: 'Koneksi Supabase belum aktif.' };
+  }
+
+  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
+  if (!teacherCheck.ok) {
+    return { ok: false, message: teacherCheck.message || 'Sesi guru tidak terverifikasi.' };
+  }
+
+  try {
+    const studentId = options.studentId || 'ALL';
+    const modeScope = options.modeScope || 'ALL';
+
+    let targetStudentName = 'Seluruh Siswa (Kelas 5)';
+    if (studentId !== 'ALL' && isValidUuid(studentId)) {
+      const { data: stRow } = await supabase
+        .from('student_profiles')
+        .select('display_name')
+        .eq('id', studentId)
+        .maybeSingle();
+      if (stRow?.display_name) {
+        targetStudentName = stRow.display_name;
+      }
+    }
+
+    // 1. Count game_attempts
+    let attQuery = supabase.from('game_attempts').select('id', { count: 'exact', head: true });
+    if (studentId !== 'ALL') {
+      attQuery = attQuery.eq('student_id', studentId);
+    }
+    if (modeScope === 'SOLO') {
+      attQuery = attQuery.in('mode', ['solo', 'SOLO']);
+    } else if (modeScope === 'CHAMPIONSHIP') {
+      attQuery = attQuery.in('mode', ['championship', 'CHAMPIONSHIP']);
+    }
+    const { count: attCount, error: attErr } = await attQuery;
+
+    // 2. Count game_progress
+    let progQuery = supabase.from('game_progress').select('id', { count: 'exact', head: true });
+    if (studentId !== 'ALL') {
+      progQuery = progQuery.eq('student_id', studentId);
+    }
+    if (modeScope === 'SOLO') {
+      progQuery = progQuery.in('mode', ['solo', 'SOLO']);
+    } else if (modeScope === 'CHAMPIONSHIP') {
+      progQuery = progQuery.in('mode', ['championship', 'CHAMPIONSHIP']);
+    }
+    const { count: progCount, error: progErr } = await progQuery;
+
+    // 3. Count championship_participants
+    let partCount = 0;
+    if (modeScope === 'ALL' || modeScope === 'CHAMPIONSHIP') {
+      let partQuery = supabase.from('championship_participants').select('id', { count: 'exact', head: true });
+      if (studentId !== 'ALL') {
+        partQuery = partQuery.eq('student_id', studentId);
+      }
+      const { count: cCount } = await partQuery;
+      partCount = cCount || 0;
+    }
+
+    if (attErr || progErr) {
+      return {
+        ok: false,
+        message: `Gagal menghitung jumlah data: ${attErr?.message || progErr?.message}`,
+      };
+    }
+
+    return {
+      ok: true,
+      preview: {
+        targetStudentName,
+        gameAttemptsCount: attCount || 0,
+        gameProgressCount: progCount || 0,
+        championshipParticipantsCount: partCount,
+      },
+    };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Gagal menghitung preview reset.' };
+  }
+}
+
+/**
+ * Downloads / Exports a backup of the target student(s) attempts, progress, and snapshot data
+ * before executing the reset.
+ */
+export async function exportResetGameDataBackup(
+  options: ResetGameDataOptions,
+): Promise<{ ok: boolean; backupJson?: string; fileName?: string; message?: string }> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { ok: false, message: 'Koneksi Supabase belum aktif.' };
+  }
+
+  try {
+    const studentId = options.studentId || 'ALL';
+    const modeScope = options.modeScope || 'ALL';
+
+    const [attRes, progRes, stRes, champPartRes] = await Promise.all([
+      supabase.from('game_attempts').select('*'),
+      supabase.from('game_progress').select('*'),
+      supabase.from('student_profiles').select('id, auth_user_id, display_name, character, is_active, championship_data'),
+      supabase.from('championship_participants').select('*'),
+    ]);
+
+    let attempts = attRes.data || [];
+    let progress = progRes.data || [];
+    let students = stRes.data || [];
+    let participants = champPartRes.data || [];
+
+    if (studentId !== 'ALL') {
+      attempts = attempts.filter((a) => a.student_id === studentId);
+      progress = progress.filter((p) => p.student_id === studentId);
+      students = students.filter((s) => s.id === studentId);
+      participants = participants.filter((cp) => cp.student_id === studentId);
+    }
+
+    if (modeScope === 'SOLO') {
+      attempts = attempts.filter((a) => String(a.mode || '').toUpperCase() === 'SOLO');
+      progress = progress.filter((p) => String(p.mode || '').toUpperCase() === 'SOLO');
+      participants = [];
+    } else if (modeScope === 'CHAMPIONSHIP') {
+      attempts = attempts.filter((a) => String(a.mode || '').toUpperCase() === 'CHAMPIONSHIP');
+      progress = progress.filter((p) => String(p.mode || '').toUpperCase() === 'CHAMPIONSHIP');
+    }
+
+    const backupData = {
+      exportedAt: new Date().toISOString(),
+      exportScope: options,
+      summary: {
+        attemptsCount: attempts.length,
+        progressCount: progress.length,
+        participantsCount: participants.length,
+        studentsCount: students.length,
+      },
+      students,
+      attempts,
+      progress,
+      championshipParticipants: participants,
+    };
+
+    const jsonStr = JSON.stringify(backupData, null, 2);
+    const dateTag = new Date().toISOString().split('T')[0];
+    const fileName = `AQUA_MATH_BACKUP_${studentId === 'ALL' ? 'ALL_STUDENTS' : studentId}_${modeScope}_${dateTag}.json`;
+
+    return {
+      ok: true,
+      backupJson: jsonStr,
+      fileName,
+    };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Gagal membuat file cadangan.' };
+  }
+}
+
+/**
+ * Executes the actual data reset for scores and progress (game_attempts, game_progress, championship_participants)
+ * WITHOUT deleting student accounts (auth.users, student_profiles, teacher_profiles).
+ * Clears local storage caches and re-syncs fresh state from Supabase.
+ */
+export async function executeResetStudentScoresAndProgress(
+  options: ResetGameDataOptions,
+): Promise<{
+  ok: boolean;
+  message: string;
+  deletedAttemptsCount?: number;
+  deletedProgressCount?: number;
+  deletedParticipantsCount?: number;
+  updatedStudents?: StudentProfile[];
+}> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { ok: false, message: 'Koneksi Supabase belum aktif.' };
+  }
+
+  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
+  if (!teacherCheck.ok) {
+    return { ok: false, message: teacherCheck.message || 'Sesi guru tidak terverifikasi.' };
+  }
+
+  try {
+    const studentId = options.studentId || 'ALL';
+    const modeScope = options.modeScope || 'ALL';
+
+    // 1. Delete game_attempts
+    let attDelQuery = supabase.from('game_attempts').delete();
+    if (studentId !== 'ALL') {
+      attDelQuery = attDelQuery.eq('student_id', studentId);
+    }
+    if (modeScope === 'SOLO') {
+      attDelQuery = attDelQuery.in('mode', ['solo', 'SOLO']);
+    } else if (modeScope === 'CHAMPIONSHIP') {
+      attDelQuery = attDelQuery.in('mode', ['championship', 'CHAMPIONSHIP']);
+    }
+    const { data: attDeleted, error: attErr } = await attDelQuery.select('id');
+
+    // 2. Delete game_progress
+    let progDelQuery = supabase.from('game_progress').delete();
+    if (studentId !== 'ALL') {
+      progDelQuery = progDelQuery.eq('student_id', studentId);
+    }
+    if (modeScope === 'SOLO') {
+      progDelQuery = progDelQuery.in('mode', ['solo', 'SOLO']);
+    } else if (modeScope === 'CHAMPIONSHIP') {
+      progDelQuery = progDelQuery.in('mode', ['championship', 'CHAMPIONSHIP']);
+    }
+    const { data: progDeleted, error: progErr } = await progDelQuery.select('id');
+
+    // 3. Delete championship_participants if scope involves Championship
+    let partDeletedCount = 0;
+    if (modeScope === 'ALL' || modeScope === 'CHAMPIONSHIP') {
+      let partDelQuery = supabase.from('championship_participants').delete();
+      if (studentId !== 'ALL') {
+        partDelQuery = partDelQuery.eq('student_id', studentId);
+      }
+      const { data: partDeleted } = await partDelQuery.select('id');
+      partDeletedCount = partDeleted?.length || 0;
+    }
+
+    if (attErr || progErr) {
+      return {
+        ok: false,
+        message: `Gagal menghapus data permainan dari Supabase: ${attErr?.message || progErr?.message}`,
+      };
+    }
+
+    // 4. Update student_profiles.championship_data to clear snapshot
+    if (modeScope === 'ALL' || modeScope === 'CHAMPIONSHIP') {
+      let profQuery = supabase.from('student_profiles').update({ championship_data: {} });
+      if (studentId !== 'ALL') {
+        profQuery = profQuery.eq('id', studentId);
+      } else {
+        profQuery = profQuery.neq('id', '00000000-0000-0000-0000-000000000000');
+      }
+      await profQuery;
+    }
+
+    // 5. Invalidate / Clear local storage caches so stale local data cannot restore old scores
+    try {
+      localStorage.removeItem('aqua_math_students_v1');
+      localStorage.removeItem('aqua_math_offline_attempts_queue_v1');
+    } catch {
+      // ignore
+    }
+
+    // 6. Fetch fresh, verified Teacher Dashboard data from Supabase
+    const freshData = await getTeacherDashboardData();
+
+    const attemptsCount = attDeleted?.length || 0;
+    const progressCount = progDeleted?.length || 0;
+
+    return {
+      ok: true,
+      deletedAttemptsCount: attemptsCount,
+      deletedProgressCount: progressCount,
+      deletedParticipantsCount: partDeletedCount,
+      updatedStudents: freshData.students,
+      message: `Berhasil mereset data permainan (${attemptsCount} percobaaan, ${progressCount} progres). Seluruh akun siswa tetap aman!`,
+    };
+  } catch (err: any) {
+    return { ok: false, message: err?.message || 'Gagal menjalankan reset data permainan.' };
   }
 }

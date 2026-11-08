@@ -44,12 +44,18 @@ import {
   adminAddSingleStudent,
   adminDeleteStudent,
   adminToggleStudentActive,
+  ensureActiveChampionshipSession,
+  executeResetStudentScoresAndProgress,
+  exportResetGameDataBackup,
   findOfficialStudentSpec,
   flushOfflineSyncQueue,
+  getResetGameDataPreview,
   getTeacherDashboardData,
   mapCharacterIdToDbCharacter,
   OFFICIAL_14_STUDENTS,
   requestTeacherPasswordReset,
+  ResetGameDataOptions,
+  ResetGameDataPreview,
   resetStudentPasswordByTeacher,
   studentUsernameToInternalEmail,
   syncOfficial14StudentAccounts,
@@ -151,6 +157,110 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [isResetting, setIsResetting] = useState(false);
   const [resetModalError, setResetModalError] = useState<string | null>(null);
+
+  // Reset Game Data Modal state
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetOptions, setResetOptions] = useState<ResetGameDataOptions>({
+    studentId: 'ALL',
+    modeScope: 'ALL',
+  });
+  const [resetPreview, setResetPreview] = useState<ResetGameDataPreview | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [isExecutingReset, setIsExecutingReset] = useState(false);
+  const [isDownloadingBackup, setIsDownloadingBackup] = useState(false);
+  const [confirmCheckbox, setConfirmCheckbox] = useState(false);
+  const [confirmInputText, setConfirmInputText] = useState('');
+  const [resetErrorMsg, setResetErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!showResetModal) return;
+    let isSubscribed = true;
+    setIsLoadingPreview(true);
+    setResetErrorMsg(null);
+    getResetGameDataPreview(resetOptions)
+      .then((res) => {
+        if (isSubscribed) {
+          if (res.ok && res.preview) {
+            setResetPreview(res.preview);
+          } else if (res.message) {
+            setResetErrorMsg(res.message);
+          }
+          setIsLoadingPreview(false);
+        }
+      })
+      .catch((err) => {
+        if (isSubscribed) {
+          setResetErrorMsg(err?.message || 'Gagal memuat preview reset data.');
+          setIsLoadingPreview(false);
+        }
+      });
+    return () => {
+      isSubscribed = false;
+    };
+  }, [showResetModal, resetOptions.studentId, resetOptions.modeScope]);
+
+  const handleDownloadBackup = async () => {
+    soundManager.playClick();
+    setIsDownloadingBackup(true);
+    setResetErrorMsg(null);
+    try {
+      const res = await exportResetGameDataBackup(resetOptions);
+      if (res.ok && res.backupJson) {
+        const blob = new Blob([res.backupJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = res.fileName || 'AQUA_MATH_BACKUP.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setStatusBanner(`File cadangan ${res.fileName} berhasil diunduh!`);
+      } else {
+        setResetErrorMsg(res.message || 'Gagal membuat file cadangan.');
+      }
+    } catch (err: any) {
+      setResetErrorMsg(err?.message || 'Terjadi kesalahan saat mengunduh cadangan.');
+    } finally {
+      setIsDownloadingBackup(false);
+    }
+  };
+
+  const handleExecuteReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    soundManager.playClick();
+    if (!confirmCheckbox) {
+      setResetErrorMsg('Anda harus mencentang persetujuan terlebih dahulu.');
+      return;
+    }
+    if (confirmInputText.trim().toUpperCase() !== 'RESET') {
+      setResetErrorMsg('Ketik "RESET" dengan huruf besar untuk mengonfirmasi.');
+      return;
+    }
+
+    setIsExecutingReset(true);
+    setResetErrorMsg(null);
+
+    try {
+      const res = await executeResetStudentScoresAndProgress(resetOptions);
+      if (res.ok) {
+        if (res.updatedStudents) {
+          onUpdateStudents(res.updatedStudents);
+        }
+        setStatusBanner(res.message);
+        setShowResetModal(false);
+        setConfirmCheckbox(false);
+        setConfirmInputText('');
+        setResetPreview(null);
+      } else {
+        setResetErrorMsg(res.message || 'Gagal mereset data permainan.');
+      }
+    } catch (err: any) {
+      setResetErrorMsg(err?.message || 'Terjadi kesalahan saat mereset data.');
+    } finally {
+      setIsExecutingReset(false);
+    }
+  };
 
   // Student roster registration state (Tab 6)
   const [addStudentFormMode, setAddStudentFormMode] = useState<'none' | 'single' | 'batch'>('none');
@@ -382,6 +492,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       className: classNameDraft.trim() || settings.className,
     });
     onUpdateSettings(next);
+    ensureActiveChampionshipSession(next.championshipSessionName).catch(() => {});
     setStatusBanner('Pengaturan Kode Akses & Kelas berhasil disimpan!');
   };
 
@@ -394,6 +505,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       [key]: !settings[key],
     });
     onUpdateSettings(next);
+    if (key === 'championshipOpen' && next.championshipOpen) {
+      ensureActiveChampionshipSession(next.championshipSessionName).catch(() => {});
+    }
     setStatusBanner('Status akses permainan berhasil diperbarui.');
   };
 
@@ -1580,6 +1694,31 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     {settings.championshipOpen ? 'SESI DIBUKA' : 'SESI DITUTUP'}
                   </button>
                 </div>
+
+                {/* 4. Danger Zone: Reset Game Data & Scores */}
+                <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-500/40 flex flex-wrap items-center justify-between gap-3 mt-4">
+                  <div>
+                    <div className="text-sm font-bold text-rose-200 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>Reset Nilai & Progres Permainan</span>
+                    </div>
+                    <div className="text-xs text-rose-300/80 mt-0.5">
+                      Hapus skor/progres permainan dari Supabase (Solo & Championship). Seluruh 14 akun siswa tetap utuh.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playClick();
+                      setResetOptions({ studentId: 'ALL', modeScope: 'ALL' });
+                      setShowResetModal(true);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-['Fredoka'] font-bold text-xs shadow-md cursor-pointer transition-all hover:scale-105 flex items-center gap-1.5"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 stroke-[2.5]" />
+                    <span>Reset Data Permainan</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -1763,13 +1902,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     type="button"
                     onClick={() => {
                       soundManager.playClick();
-                      const next = resetAllChampionshipScores();
-                      onUpdateStudents(next);
-                      setStatusBanner(
-                        'Skor Class Championship berhasil di-reset untuk sesi baru (Skor Solo Adventure tetap aman).',
-                      );
+                      setResetOptions({ studentId: 'ALL', modeScope: 'CHAMPIONSHIP' });
+                      setShowResetModal(true);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-sky-950 text-xs font-bold cursor-pointer"
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-sky-950 text-xs font-bold cursor-pointer transition-all hover:scale-105 shadow-md"
                   >
                     <RotateCcw className="w-3.5 h-3.5 stroke-[2.5]" />
                     <span>Reset Sesi Championship</span>
@@ -2654,6 +2790,183 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   className="px-6 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-sky-950 font-['Fredoka'] font-bold text-sm border-2 border-white shadow-md cursor-pointer disabled:opacity-50"
                 >
                   {isResetting ? 'Memproses Reset...' : 'Simpan Password Baru'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* RESET GAME DATA & SCORES MODAL */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-sky-950/90 backdrop-blur-xs overflow-y-auto">
+          <div className="w-full max-w-lg bg-sky-950 border-4 border-rose-500 rounded-3xl p-6 shadow-2xl space-y-4 my-8">
+            <div className="flex items-center justify-between border-b border-rose-500/40 pb-3">
+              <div className="flex items-center gap-2.5 font-['Fredoka'] font-bold text-lg text-rose-200">
+                <AlertTriangle className="w-6 h-6 text-rose-400 shrink-0" />
+                <span>Reset Nilai & Progres Permainan</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowResetModal(false);
+                  setResetErrorMsg(null);
+                  setConfirmCheckbox(false);
+                  setConfirmInputText('');
+                }}
+                className="text-cyan-200 hover:text-white text-xs font-bold cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+
+            <p className="text-xs text-cyan-200 leading-relaxed">
+              Pilih target siswa dan cakupan mode yang ingin di-reset. Seluruh akun siswa (<span className="text-yellow-300 font-bold">auth.users</span>, <span className="text-yellow-300 font-bold">student_profiles</span>, username, & password) <span className="text-emerald-400 font-bold">DIJAMIN TETAP UTUH DAN AMAN</span>.
+            </p>
+
+            <form onSubmit={handleExecuteReset} className="space-y-4">
+              {/* Target Student Selection */}
+              <div>
+                <label className="block text-xs font-bold text-cyan-200 mb-1">
+                  1. Pilih Target Siswa
+                </label>
+                <select
+                  value={resetOptions.studentId}
+                  onChange={(e) =>
+                    setResetOptions((prev) => ({ ...prev, studentId: e.target.value }))
+                  }
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border border-cyan-400 text-white font-bold text-xs"
+                >
+                  <option value="ALL">Seluruh Siswa Kelas 5 (Semua 14 Akun)</option>
+                  {students.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.username || 'siswa'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Mode Scope Selection */}
+              <div>
+                <label className="block text-xs font-bold text-cyan-200 mb-1">
+                  2. Pilih Cakupan Mode
+                </label>
+                <select
+                  value={resetOptions.modeScope}
+                  onChange={(e) =>
+                    setResetOptions((prev) => ({
+                      ...prev,
+                      modeScope: e.target.value as 'ALL' | 'SOLO' | 'CHAMPIONSHIP',
+                    }))
+                  }
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border border-cyan-400 text-white font-bold text-xs"
+                >
+                  <option value="ALL">Semua Mode (Solo Adventure & Class Championship)</option>
+                  <option value="SOLO">Hanya Solo Adventure</option>
+                  <option value="CHAMPIONSHIP">Hanya Class Championship</option>
+                </select>
+              </div>
+
+              {/* Data Preview Banner */}
+              <div className="p-3.5 rounded-2xl bg-sky-900/90 border border-cyan-500/40 text-xs space-y-1.5">
+                <div className="font-bold text-yellow-300 flex items-center justify-between">
+                  <span>Pratinjau Data Terpengaruh:</span>
+                  {isLoadingPreview && <span className="text-cyan-300 text-[10px] animate-pulse">Menghitung...</span>}
+                </div>
+                {resetPreview ? (
+                  <div className="grid grid-cols-2 gap-2 text-cyan-100 font-mono text-[11px] pt-1">
+                    <div className="bg-sky-950 p-2 rounded-lg border border-cyan-500/20">
+                      Target: <span className="text-white font-bold">{resetPreview.targetStudentName}</span>
+                    </div>
+                    <div className="bg-sky-950 p-2 rounded-lg border border-cyan-500/20">
+                      Percobaan Game: <span className="text-rose-400 font-bold">{resetPreview.gameAttemptsCount}</span>
+                    </div>
+                    <div className="bg-sky-950 p-2 rounded-lg border border-cyan-500/20">
+                      Progres Level: <span className="text-amber-400 font-bold">{resetPreview.gameProgressCount}</span>
+                    </div>
+                    <div className="bg-sky-950 p-2 rounded-lg border border-cyan-500/20">
+                      Championship: <span className="text-cyan-300 font-bold">{resetPreview.championshipParticipantsCount}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-cyan-300 italic">Memuat pratinjau data...</div>
+                )}
+              </div>
+
+              {/* Backup Download Section */}
+              <div className="p-3 rounded-2xl bg-sky-900/60 border border-cyan-500/30 flex items-center justify-between gap-2">
+                <div className="text-[11px] text-cyan-200">
+                  Unduh cadangan data permainan sebelum melakukan reset.
+                </div>
+                <button
+                  type="button"
+                  onClick={handleDownloadBackup}
+                  disabled={isDownloadingBackup}
+                  className="px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{isDownloadingBackup ? 'Mengunduh...' : 'Unduh JSON'}</span>
+                </button>
+              </div>
+
+              {/* Confirmation Inputs */}
+              <div className="p-3.5 rounded-2xl bg-rose-950/80 border border-rose-500/50 space-y-3">
+                <label className="flex items-start gap-2.5 cursor-pointer text-xs font-bold text-rose-200">
+                  <input
+                    type="checkbox"
+                    checked={confirmCheckbox}
+                    onChange={(e) => setConfirmCheckbox(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-rose-400 text-rose-600 focus:ring-rose-500 cursor-pointer"
+                  />
+                  <span>
+                    Saya mengerti bahwa seluruh nilai dan progres permainan yang dipilih akan dihapus permanen dari Supabase.
+                  </span>
+                </label>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-rose-300 mb-1">
+                    Ketik "RESET" dengan huruf besar untuk mengonfirmasi:
+                  </label>
+                  <input
+                    type="text"
+                    value={confirmInputText}
+                    onChange={(e) => setConfirmInputText(e.target.value)}
+                    placeholder="RESET"
+                    className="w-full px-3.5 py-2 rounded-xl bg-sky-950 border border-rose-400/80 text-rose-300 font-mono font-bold text-sm uppercase placeholder-rose-700"
+                  />
+                </div>
+              </div>
+
+              {resetErrorMsg && (
+                <div className="p-3 rounded-xl bg-rose-900/80 border border-rose-400 text-rose-200 text-xs font-bold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{resetErrorMsg}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowResetModal(false);
+                    setResetErrorMsg(null);
+                    setConfirmCheckbox(false);
+                    setConfirmInputText('');
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-sky-800 hover:bg-sky-700 text-cyan-100 text-xs font-bold cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    isExecutingReset ||
+                    !confirmCheckbox ||
+                    confirmInputText.trim().toUpperCase() !== 'RESET'
+                  }
+                  className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-['Fredoka'] font-bold text-sm border-2 border-white shadow-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {isExecutingReset ? 'Memproses Reset...' : 'Eksekusi Reset Data'}
                 </button>
               </div>
             </form>
