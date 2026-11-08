@@ -41,7 +41,7 @@ function harness() {
       if (fail) return { error: { code: '42501' } };
       const row = { id: `id-${calls.length}`, student_id: 'student', mode: returnedMode || args.p_mode,
         session_id: returnedSession || args.p_session_id, location_id: args.p_location_id, score: args.p_correct_count * 10 };
-      rows.push(row); return { data: { attempt_id: row.id, student_id: 'student' } };
+      rows.push(row); return { data: { success: true, attempt_id: row.id, student_id: 'student', mode: args.p_mode, score: row.score, correct_count: args.p_correct_count, wrong_count: args.p_wrong_count, attempt_number: 1 } };
     },
   };
   const engine = createAttemptSync({ storage: () => storage, context: async () => ({ authUserId: 'owner', studentId: 'student', client }) });
@@ -57,6 +57,7 @@ test('mission freezes mode, owner, session and retry key at start, not submissio
   const h = harness(); const saved = await h.engine.save({ ...result, ...run });
   assert.equal(saved.syncedToSupabase, true);
   assert.equal(h.calls[0].p_mode, 'CHAMPIONSHIP'); assert.equal(h.calls[0].p_session_id, S1);
+  assert.equal(h.calls[0].p_location_id, '1'); assert.ok(Number.isInteger(h.calls[0].p_duration_seconds));
   const dashboard = applySupabaseAttemptsAndProgressToProfile(createEmptyStudentProfile('student', 'Synthetic', 'bima'), h.rows);
   assert.equal(dashboard.solo.bestTotalScore, 0); assert.equal(dashboard.championship.totalChampionshipScore, 90);
   assert.equal(buildChampionshipLeaderboard([dashboard])[0].championshipScore, 90);
@@ -179,6 +180,7 @@ test('UI mode selection changing after mission start cannot change the captured 
   selection.mode = 'solo';
   const h = harness(); await h.engine.save({ ...result, ...run });
   assert.equal(h.calls[0].p_mode, 'CHAMPIONSHIP'); assert.equal(h.calls[0].p_session_id, S1);
+  assert.equal(h.calls[0].p_location_id, '1'); assert.ok(Number.isInteger(h.calls[0].p_duration_seconds));
 });
 
 test('confirmed SOLO plus failed Championship leaves SOLO total unchanged through Dashboard hydration', async () => {
@@ -188,4 +190,13 @@ test('confirmed SOLO plus failed Championship leaves SOLO total unchanged throug
   const profile = applySupabaseAttemptsAndProgressToProfile(createEmptyStudentProfile('student', 'Synthetic', 'bima'), h.rows);
   assert.equal(profile.solo.bestTotalScore, 40); assert.equal(profile.championship.totalChampionshipScore, 0);
   assert.equal(h.calls[0].p_mode, 'SOLO'); assert.equal(h.calls[1].p_mode, 'CHAMPIONSHIP');
+});
+
+
+test('audited integer/count contract rejects malformed pending payloads without an RPC call', async () => {
+  for (const changes of [{ durationSeconds: 0.5 }, { correctCount: 8, wrongCount: 1 }, { levelNumber: 6 }, { locationId: 0 }]) {
+    const h = harness();
+    assert.equal((await h.engine.save({ ...result, ...changes })).syncedToSupabase, false);
+    await h.engine.flush(); assert.equal(h.calls.length, 0); assert.equal(h.engine.read().length, 1);
+  }
 });

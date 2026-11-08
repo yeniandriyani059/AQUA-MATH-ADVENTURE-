@@ -37,6 +37,11 @@ export function createAttemptSync(deps: {
       return pending('Antrean dari versi sebelum perbaikan ditahan untuk pemeriksaan; tidak dihapus atau dikirim ulang otomatis.', score);
     const mode = parseGameMode(item.mode);
     if (!mode || (mode === 'solo' && item.sessionId != null)) return pending('Mode atau sesi ambigu; hasil ditahan tanpa mengubah mode.', score);
+    if (!Number.isInteger(item.levelNumber) || item.levelNumber < 1 || item.levelNumber > 5 ||
+      !Number.isInteger(item.locationId) || item.locationId < 1 || item.locationId > 10 ||
+      !Number.isInteger(item.correctCount) || !Number.isInteger(item.wrongCount) || item.correctCount < 0 || item.wrongCount < 0 || item.correctCount + item.wrongCount !== 10 ||
+      !Number.isInteger(item.durationSeconds) || item.durationSeconds < 0)
+      return pending('Data hasil tidak sesuai kontrak RPC; antrean ditahan tanpa mengubah nilai.', score);
     const saved = receipt(item);
     if (saved && saved.fingerprint !== fingerprint(item)) return pending('ID percobaan sudah dipakai untuk hasil berbeda.', score);
     if (saved?.fingerprint === fingerprint(item)) {
@@ -58,7 +63,7 @@ export function createAttemptSync(deps: {
     try {
       response = await ctx.client.rpc('save_game_attempt', {
         p_mode: mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO',
-        p_level_number: item.levelNumber, p_location_id: item.locationId,
+        p_level_number: item.levelNumber, p_location_id: String(item.locationId),
         p_correct_count: item.correctCount, p_wrong_count: item.wrongCount,
         p_duration_seconds: item.durationSeconds, p_session_id: mode === 'championship' ? item.sessionId : null,
       });

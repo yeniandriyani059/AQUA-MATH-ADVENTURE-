@@ -429,7 +429,7 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
 
       if (!['solo', 'championship'].includes(mode) || !Number.isInteger(locationId) || locationId < 1 || locationId > 10 ||
         !Number.isInteger(correctCount) || !Number.isInteger(wrongCount) || correctCount < 0 || wrongCount < 0 || correctCount + wrongCount !== 10 ||
-        !Number.isFinite(durationSeconds) || durationSeconds < 0 || levelNumber !== Math.ceil(locationId / 2))
+        !Number.isInteger(durationSeconds) || durationSeconds < 0 || levelNumber !== Math.ceil(locationId / 2))
         return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Hasil permainan tidak valid.' });
       if (mode === 'championship') {
         if (!validSessionId(sessionId)) return void res.status(400).json({ ok: false, syncedToSupabase: false });
@@ -438,7 +438,7 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
       }
       const { data: attempt, error: attemptError } = await sb.rpc('save_game_attempt', {
         p_mode: mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO',
-        p_level_number: levelNumber, p_location_id: locationId, p_correct_count: correctCount,
+        p_level_number: levelNumber, p_location_id: String(locationId), p_correct_count: correctCount,
         p_wrong_count: wrongCount, p_duration_seconds: durationSeconds,
         p_session_id: mode === 'championship' ? sessionId : null,
       });
@@ -463,6 +463,15 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
     }
   });
 
+  // API misses must never be served as the SPA index document.
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ ok: false, message: 'Endpoint API tidak tersedia.' });
+  });
+  app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!/^\/api(?:\/|$)/i.test(req.path)) return next(error);
+    const status = error?.type === 'entity.parse.failed' ? 400 : error?.type === 'entity.too.large' ? 413 : 500;
+    res.status(status).json({ ok: false, message: status === 400 ? 'JSON permintaan tidak valid.' : 'Permintaan API gagal diproses.' });
+  });
   return app;
 }
 

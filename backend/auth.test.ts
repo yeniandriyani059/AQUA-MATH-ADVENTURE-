@@ -40,7 +40,7 @@ function mock(options: Record<string, any> = {}) {
         calls.push(['rpc', name, args, token]);
         if (options.throwRpc) throw new Error('offline');
         savedAttempt = { id: 'attempt-id', student_id: 'student-id', mode: options.savedMode || args.p_mode, session_id: options.savedSession || args.p_session_id };
-        return options.rpcFailure ? { error: new Error('RLS denied') } : { data: options.emptyRpc ? null : { attempt_id: 'attempt-id', student_id: 'student-id' } };
+        return options.rpcFailure ? { error: new Error('RLS denied') } : { data: options.emptyRpc ? null : { success: !options.rpcBodyFailure, attempt_id: 'attempt-id', student_id: 'student-id', mode: args.p_mode, score: args.p_correct_count * 10, correct_count: args.p_correct_count, wrong_count: args.p_wrong_count, attempt_number: 1 } };
       },
     };
   };
@@ -112,21 +112,22 @@ test('SOLO and Championship writes use existing RPC with verified caller, never 
     const r = await request(student, '/api/student/save-attempt', { ...attempt, mode, sessionId: '11111111-1111-4111-8111-111111111111' }, 'student-token');
     assert.equal(r.status, 200); assert.equal(r.body.syncedToSupabase, true);
     const rpc = r.calls.find(c => c[0] === 'rpc');
-    assert.equal(rpc[1], 'save_game_attempt'); assert.equal(rpc[3], 'student-token');
+    assert.equal(rpc[1], 'save_game_attempt'); assert.equal(rpc[2].p_location_id, '1');
+    assert.equal(typeof rpc[2].p_duration_seconds, 'number'); assert.ok(Number.isInteger(rpc[2].p_duration_seconds)); assert.equal(rpc[3], 'student-token');
     assert.equal(rpc[2].p_mode, mode.toUpperCase()); assert.equal(rpc[2].student_id, undefined);
     assert.equal(rpc[2].p_session_id, mode === 'solo' ? null : '11111111-1111-4111-8111-111111111111');
   }
 });
 
 test('database failure, no confirmation and RPC exception never report save success', async () => {
-  for (const option of ['rpcFailure', 'emptyRpc', 'throwRpc']) {
+  for (const option of ['rpcFailure', 'emptyRpc', 'throwRpc', 'rpcBodyFailure']) {
     const r = await request({ ...student, [option]: true }, '/api/student/save-attempt', attempt, 'student-token');
     assert.equal(r.status, 500); assert.equal(r.body.ok, false); assert.equal(r.body.syncedToSupabase, false);
   }
 });
 
 test('invalid results and inactive Championship session cannot reach RPC', async () => {
-  for (const body of [{ ...attempt, correctCount: 99 }, { ...attempt, mode: 'bad' }, { ...attempt, levelNumber: 5 }, { ...attempt, durationSeconds: -1 }, { ...attempt, mode: 'championship' }]) {
+  for (const body of [{ ...attempt, correctCount: 99 }, { ...attempt, mode: 'bad' }, { ...attempt, levelNumber: 5 }, { ...attempt, durationSeconds: -1 }, { ...attempt, durationSeconds: 0.5 }, { ...attempt, mode: 'championship' }]) {
     const r = await request(student, '/api/student/save-attempt', body, 'student-token');
     assert.equal(r.status, 400); assert.ok(!r.calls.some(c => c[0] === 'rpc'));
   }
