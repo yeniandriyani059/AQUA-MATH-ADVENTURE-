@@ -1,3 +1,5 @@
+> Latest operator audit is complete. The remaining reset gap is addressed by the two-stage database guard package in `docs/championship-reset-guards.md`; this earlier checkpoint is retained as history. No repeat permission audit is requested.
+
 > Latest review: **NOT READY FOR MIGRATION** until legacy destructive reset execution is safely retired. See `docs/championship-last-review.md`. Candidate guard alone does not patch the old main website.
 
 # Championship database patch — final review

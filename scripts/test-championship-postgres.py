@@ -101,6 +101,45 @@ def main():
         solo_probe="BEGIN;SELECT public.save_game_attempt('SOLO',1,'1',7,3,15,NULL)-'attempt_id';ROLLBACK;"
         original_solo=value(solo_probe,OWNERS[0])
         migration=(ROOT/'docs/sql/aqua-championship.final.review.sql').read_text()
+        guard_sql=(ROOT/'docs/sql/aqua-reset-guards.review.sql').read_text()
+        guard_roster=re.findall(r"'([0-9a-f-]{36})'::uuid",guard_sql)
+        assert guard_roster==ROSTER
+        # Same permissions as the completed production audit. RLS alone cannot
+        # stop TRUNCATE: prove it in a rollback-only isolated fixture probe.
+        assert sql('BEGIN;TRUNCATE public.game_progress;SELECT count(*) FROM public.game_progress;ROLLBACK;',TEACHER).splitlines()[-1]=='0'
+        assert snapshot_solo()==baseline
+        sql(migration,expect_error='P0001')
+        assert sql("SELECT to_regnamespace('aqua_championship_private') IS NULL;")=='t'
+        check('TRUNCATE bypasses SELECT-only RLS; Championship install refuses missing reset guards atomically')
+        sql("UPDATE public.student_profiles SET championship_data=jsonb_build_object('keep_snapshot',id);")
+        protected_before=sql("SELECT jsonb_agg(to_jsonb(sp) ORDER BY id) FROM public.student_profiles sp;")
+        policy_before=sql("SELECT jsonb_agg(to_jsonb(p) ORDER BY policyname) FROM pg_policies p WHERE schemaname='public' AND tablename='student_profiles';")
+        sql(guard_sql);sql(guard_sql)
+        assert protected_before==sql("SELECT jsonb_agg(to_jsonb(sp) ORDER BY id) FROM public.student_profiles sp;")
+        assert policy_before==sql("SELECT jsonb_agg(to_jsonb(p) ORDER BY policyname) FROM pg_policies p WHERE schemaname='public' AND tablename='student_profiles';")
+        for profile in ROSTER:
+            sql(f"UPDATE public.student_profiles SET championship_data='{{}}'::jsonb WHERE id='{profile}';",TEACHER,expect_error='42501')
+            sql(f"DELETE FROM public.student_profiles WHERE id='{profile}';",TEACHER,expect_error='42501')
+        sql(f"UPDATE public.student_profiles SET auth_user_id='{uuid.uuid4()}' WHERE id='{ROSTER[0]}';",TEACHER,expect_error='42501')
+        sql(f"UPDATE public.student_profiles SET id='{uuid.uuid4()}' WHERE id='{ROSTER[0]}';",TEACHER,expect_error='42501')
+        sql(f"UPDATE public.student_profiles SET championship_data=championship_data WHERE id='{ROSTER[0]}';",TEACHER)
+        assert protected_before==sql("SELECT jsonb_agg(to_jsonb(sp) ORDER BY id) FROM public.student_profiles sp;")
+        check('idempotent guard install rewrites no data/policies; all 14 snapshots/deletes/identity escapes blocked')
+        # Other applications retain per-row CRUD; normal AQUA metadata edits remain available.
+        outside='55555555-5555-4555-8555-555555555555'
+        sql(f"INSERT INTO public.student_profiles(id,auth_user_id,display_name,championship_data) VALUES('{outside}','{outside}','Other app','{{}}');",TEACHER)
+        sql(f"UPDATE public.student_profiles SET championship_data='{{\"other_app\":true}}' WHERE id='{outside}';",TEACHER)
+        assert value(f"SELECT championship_data FROM public.student_profiles WHERE id='{outside}';",TEACHER)=={'other_app':True}
+        mixed_before=sql("SELECT jsonb_agg(to_jsonb(sp) ORDER BY id) FROM public.student_profiles sp;")
+        sql("UPDATE public.student_profiles SET championship_data='{}'::jsonb;",TEACHER,expect_error='42501')
+        sql("DELETE FROM public.student_profiles;",TEACHER,expect_error='42501')
+        assert mixed_before==sql("SELECT jsonb_agg(to_jsonb(sp) ORDER BY id) FROM public.student_profiles sp;")
+        sql(f"BEGIN;UPDATE public.student_profiles SET display_name='Metadata edit',character='SINTA',is_active=false WHERE id='{ROSTER[0]}';ROLLBACK;",TEACHER)
+        sql(f"DELETE FROM public.student_profiles WHERE id='{outside}';",TEACHER)
+        assert protected_before==sql("SELECT jsonb_agg(to_jsonb(sp) ORDER BY id) FROM public.student_profiles sp;")
+        sql("TRUNCATE public.game_progress;",TEACHER,expect_error='42501')
+        assert snapshot_solo()==baseline
+        check('mixed reset statements roll back; non-AQUA CRUD and AQUA name/character/active edits remain permitted')
         sql(migration)
         assert snapshot_solo()==baseline
         assert original_body==sql("SELECT prosrc FROM pg_proc WHERE oid='aqua_championship_private.legacy_save_game_attempt(text,integer,text,integer,integer,integer,uuid)'::regprocedure;")
@@ -221,38 +260,28 @@ def main():
         assert 0<own<all_count
         sql("INSERT INTO public.game_attempts DEFAULT VALUES;",OWNERS[0],expect_error='42501')
         check('existing student SELECT RLS retained; direct game_attempt writes still forbidden')
-        # Destructive legacy reset compatibility, ONLY in this disposable fixture.
+        # Final, USER-CONFIRMED RLS/grants; no fabricated DELETE policy is needed.
         before_reset=snapshot_solo()
-        # Initially the fixture has SELECT grants only; denied operations cannot erase scores.
-        sql("DELETE FROM public.game_attempts;",TEACHER,expect_error='42501')
-        sql("GRANT DELETE ON public.game_attempts,public.game_progress,public.championship_sessions,public.championship_participants TO authenticated;")
-        # A DELETE grant without a DELETE/ALL RLS policy deletes zero rows.
-        sql("DELETE FROM public.game_attempts;DELETE FROM public.game_progress;",TEACHER)
+        for table in ('game_attempts','game_progress','championship_participants','championship_sessions'):
+            sql(f"DELETE FROM public.{table};",TEACHER,expect_error='42501')
+        sql("UPDATE public.student_profiles SET championship_data='{}'::jsonb;",TEACHER,expect_error='42501')
         assert snapshot_solo()==before_reset
-        check('SELECT-only RLS denies/filters legacy deletes without changing scores')
-        # Simulate the separately authorized deleter that a legacy reset would need.
-        # These policies are TEST-ONLY and are never included in the migration.
-        for table in ('game_attempts','game_progress','championship_participants'):
-            sql(f"CREATE POLICY synthetic_teacher_delete ON public.{table} FOR DELETE TO authenticated USING(auth.uid()='{TEACHER}'::uuid AND student_id=ANY(public.aqua_championship_roster_v1()));")
-        # Roster helper is intentionally private to RPCs, so the test policy uses an explicit scoped list.
-        for table in ('game_attempts','game_progress','championship_participants'):
-            sql(f"ALTER POLICY synthetic_teacher_delete ON public.{table} USING(auth.uid()='{TEACHER}'::uuid AND student_id IN ('{ROSTER[0]}'::uuid,'{ROSTER[1]}'::uuid,'{ROSTER[-1]}'::uuid));")
-        sql(f"CREATE POLICY synthetic_teacher_delete ON public.championship_sessions FOR DELETE TO authenticated USING(auth.uid()='{TEACHER}'::uuid AND created_by='{TP}'::uuid);")
-        error=sql(f"DELETE FROM public.game_attempts WHERE id='{results[0]['attempt_id']}';",TEACHER,expect_error='23503')
+        assert protected_before==sql("SELECT jsonb_agg(to_jsonb(sp) ORDER BY id) FROM public.student_profiles sp;")
+        check('old web reset gets statement errors even with zero DELETE-visible rows; snapshots/archives/SOLO remain intact')
+        all_tables='public.student_profiles,public.game_attempts,public.game_progress,public.championship_sessions,public.championship_participants,aqua_championship_private.sessions_v1,aqua_championship_private.attempt_requests_v1'
+        sql('TRUNCATE '+all_tables+';',expect_error='42501')
+        sql('SET session_replication_role=replica;TRUNCATE '+all_tables+';',expect_error='42501')
+        assert snapshot_solo()==before_reset
+        check('whole-table TRUNCATE and replica-mode bypass blocked without CASCADE or policy removal')
+        # Owner-level probes show non-cascading FKs are still intact. The web
+        # DELETE guard is invoker-role scoped, so privileged maintenance is not
+        # globally prohibited for other apps; account deletion guards remain.
+        error=sql(f"DELETE FROM public.game_attempts WHERE id='{results[0]['attempt_id']}';",expect_error='23503')
         assert 'attempt_requests_v1_attempt_id_fkey' in error
         error=sql(f"BEGIN;DELETE FROM public.championship_participants WHERE session_id='{session2}';DELETE FROM public.championship_sessions WHERE id='{session2}';COMMIT;",expect_error='23503')
         assert 'sessions_v1_session_id_fkey' in error
         assert snapshot_solo()==before_reset
-        check('non-cascading FK blocks deletion of receipted attempts and an otherwise empty managed session')
-        # Mirror separate REST transactions: first DELETE fails, but a subsequent
-        # progress DELETE can still succeed. Roll it back here to retain test baselines.
-        sql('DELETE FROM public.game_attempts;',TEACHER,expect_error='23503')
-        probe=sql('BEGIN;DELETE FROM public.game_progress;SELECT count(*) FROM public.game_progress;ROLLBACK;',TEACHER)
-        assert probe.splitlines()[-1]=='0'
-        probe=sql(f"BEGIN;DELETE FROM public.championship_participants WHERE student_id='{ROSTER[-1]}';SELECT count(*) FROM public.championship_participants WHERE student_id='{ROSTER[-1]}';ROLLBACK;",TEACHER)
-        assert probe.splitlines()[-1]=='0'
-        assert snapshot_solo()==before_reset
-        check('legacy multi-request reset is NOT atomic: later progress/unused membership deletes remain possible; rollback probes preserve SOLO')
+        check('existing non-cascading foreign keys still protect attempts/session archives against owner deletion')
         print(f'ALL {passed} POSTGRESQL SCENARIOS PASSED (synthetic fixture; no production access).',flush=True)
     finally:
         docker('rm','--force',NAME)

@@ -9,7 +9,7 @@ $$;
 GRANT USAGE ON SCHEMA auth TO anon,authenticated;
 GRANT EXECUTE ON FUNCTION auth.uid() TO anon,authenticated;
 CREATE TABLE public.teacher_profiles(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),auth_user_id uuid UNIQUE NOT NULL,role text NOT NULL,display_name text);
-CREATE TABLE public.student_profiles(id uuid PRIMARY KEY,auth_user_id uuid UNIQUE NOT NULL,display_name text,is_active boolean NOT NULL DEFAULT true);
+CREATE TABLE public.student_profiles(id uuid PRIMARY KEY,auth_user_id uuid UNIQUE NOT NULL,display_name text,is_active boolean NOT NULL DEFAULT true,character text DEFAULT 'BIMA',championship_data jsonb DEFAULT '{}'::jsonb);
 CREATE TABLE public.championship_sessions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),session_name text NOT NULL,status text NOT NULL CHECK(status IN ('OPEN','CLOSED')),created_by uuid NOT NULL REFERENCES public.teacher_profiles(id),created_at timestamptz DEFAULT now());
 CREATE TABLE public.championship_participants(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),session_id uuid NOT NULL REFERENCES public.championship_sessions(id),student_id uuid NOT NULL REFERENCES public.student_profiles(id),completion_status text NOT NULL DEFAULT 'REGISTERED' CHECK(completion_status IN ('REGISTERED','PLAYING','COMPLETED')),official_score integer NOT NULL DEFAULT 0,UNIQUE(session_id,student_id));
 CREATE TABLE public.game_attempts(
@@ -67,3 +67,11 @@ CREATE POLICY aqua_teacher_select_attempts ON public.game_attempts FOR SELECT TO
  auth.uid()='6568ffbf-91c4-4ccb-9d00-980c2ffb64fb'::uuid AND EXISTS(SELECT 1 FROM public.teacher_profiles WHERE auth_user_id=auth.uid() AND role='teacher'));
 CREATE POLICY aqua_teacher_select_progress ON public.game_progress FOR SELECT TO authenticated USING(
  auth.uid()='6568ffbf-91c4-4ccb-9d00-980c2ffb64fb'::uuid AND EXISTS(SELECT 1 FROM public.teacher_profiles WHERE auth_user_id=auth.uid() AND role='teacher'));
+
+-- User-confirmed current production permissions: ordinary DML follows RLS,
+-- TRUNCATE does not. Preserve the teacher FOR ALL policy during guard install.
+GRANT DELETE,UPDATE,TRUNCATE ON public.game_attempts,public.game_progress,public.championship_sessions,public.championship_participants TO authenticated;
+GRANT INSERT,UPDATE,DELETE,TRUNCATE ON public.student_profiles TO authenticated;
+CREATE POLICY teacher_manage_student_profiles ON public.student_profiles FOR ALL TO authenticated
+USING(EXISTS(SELECT 1 FROM public.teacher_profiles WHERE auth_user_id=auth.uid() AND role='teacher'))
+WITH CHECK(EXISTS(SELECT 1 FROM public.teacher_profiles WHERE auth_user_id=auth.uid() AND role='teacher'));

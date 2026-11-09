@@ -1,3 +1,5 @@
+> Latest operator audit is complete. The remaining reset gap is addressed by the two-stage database guard package in `docs/championship-reset-guards.md`; this earlier checkpoint is retained as history. No repeat permission audit is requested.
+
 # Last compatibility review — NOT READY FOR MIGRATION
 
 Review after 539ff5e. No production query/reset/migration, push, merge or deployment

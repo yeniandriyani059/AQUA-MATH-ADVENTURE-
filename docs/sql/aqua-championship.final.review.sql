@@ -1,7 +1,7 @@
 -- FINAL REVIEW ARTIFACT. DO NOT RUN WITHOUT APPROVAL.
--- STATUS: NOT READY FOR MIGRATION while legacy destructive reset paths remain active.
--- See docs/championship-last-review.md; NO ACTION foreign keys are intentional.
--- Disabling reset only on the candidate does not secure the older main website.
+-- READY FOR REVIEW with prerequisite aqua-reset-guards.review.sql installed first.
+-- The earlier reset audit is resolved by DB guards, not by trusting cached PWA code.
+-- See docs/championship-reset-guards.md for shared-table TRUNCATE/field restrictions.
 -- One transaction; no historical data UPDATE/DELETE or SOLO rewrite.
 -- Requires execution AS THE CURRENT OWNER of public.save_game_attempt.
 -- Preserves original function body exactly in a non-exposed private schema.
@@ -11,6 +11,30 @@ SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '60s';
 CREATE SCHEMA IF NOT EXISTS aqua_championship_private;
 REVOKE ALL ON SCHEMA aqua_championship_private FROM PUBLIC, anon, authenticated;
+
+DO $reset_guard_prerequisite$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE t.tgrelid='public.student_profiles'::regclass AND t.tgname='aqua_protect_profiles_v1'
+      AND t.tgenabled='A' AND t.tgtype=27 AND n.nspname='aqua_championship_private' AND p.proname='protect_profiles_v1'
+  ) OR (
+    SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE t.tgrelid IN ('public.student_profiles'::regclass,'public.game_attempts'::regclass,'public.game_progress'::regclass,
+      'public.championship_sessions'::regclass,'public.championship_participants'::regclass)
+      AND t.tgname='aqua_reject_truncate_v1' AND t.tgenabled='A' AND t.tgtype=34
+      AND n.nspname='aqua_championship_private' AND p.proname='reject_game_truncate_v1'
+  ) <> 5 OR (
+    SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE t.tgrelid IN ('public.game_attempts'::regclass,'public.game_progress'::regclass,
+      'public.championship_sessions'::regclass,'public.championship_participants'::regclass)
+      AND t.tgname='aqua_reject_web_delete_v1' AND t.tgenabled='A' AND t.tgtype=10
+      AND n.nspname='aqua_championship_private' AND p.proname='reject_web_game_delete_v1'
+  ) <> 4 THEN
+    RAISE EXCEPTION 'Install approved aqua-reset-guards.review.sql first; reset protection is required.';
+  END IF;
+END;
+$reset_guard_prerequisite$;
 
 DO $guard$
 DECLARE v_oid oid; v_source text; v_clone text; v_owner oid; v_saved oid; v_backup_meta jsonb; v_restored_definition text;
