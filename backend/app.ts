@@ -403,7 +403,7 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
 
   // Save through the existing RPC under the authenticated student RLS context.
   app.post('/api/student/save-attempt', async (req, res) => {
-    const { studentId, mode, levelNumber, locationId, correctCount, wrongCount, durationSeconds, sessionId } = req.body || {};
+    const { studentId, mode, levelNumber, locationId, correctCount, wrongCount, durationSeconds, sessionId, requestId } = req.body || {};
 
     if (!studentId || !locationId) {
       res.status(400).json({ ok: false, message: 'Data percobaan permainan tidak lengkap.' });
@@ -423,12 +423,15 @@ export function createBackendApp(getSupabaseClient = defaultGetClient, allowedTe
         !Number.isInteger(correctCount) || !Number.isInteger(wrongCount) || correctCount < 0 || wrongCount < 0 || correctCount + wrongCount !== 10 ||
         !Number.isInteger(durationSeconds) || durationSeconds < 0 || levelNumber !== Math.ceil(locationId / 2))
         return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Hasil permainan tidak valid.' });
+      if (mode === 'championship' && requestId != null && !validSessionId(requestId))
+        return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Request ID tidak valid.' });
       if (mode === 'championship') {
         if (!validSessionId(sessionId)) return void res.status(400).json({ ok: false, syncedToSupabase: false });
         const { data: session, error: sessionError } = await sb.from('championship_sessions').select('id, status').eq('id', sessionId).eq('status', 'OPEN').maybeSingle();
-        if (sessionError || session?.status !== 'OPEN') return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Sesi Championship tidak aktif.' });
+        if (requestId == null && (sessionError || session?.status !== 'OPEN')) return void res.status(400).json({ ok: false, syncedToSupabase: false, message: 'Sesi Championship tidak aktif.' });
       }
-      const { data: attempt, error: attemptError } = await sb.rpc('save_game_attempt', {
+      const { data: attempt, error: attemptError } = await sb.rpc(mode === 'championship' && requestId != null ? 'aqua_save_championship_attempt_v1' : 'save_game_attempt', {
+        ...(mode === 'championship' && requestId != null ? { p_request_id: requestId } : {}),
         p_mode: mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO',
         p_level_number: levelNumber, p_location_id: String(locationId), p_correct_count: correctCount,
         p_wrong_count: wrongCount, p_duration_seconds: durationSeconds,

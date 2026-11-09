@@ -33,6 +33,7 @@ function harness() {
     async rpc(name: string, args?: any) {
       calls.push([name, args]);
       if (state.rpcError) return { error: { message: state.rpcError } };
+      if (name === 'aqua_teacher_championship_sessions_v1') return { data: state.sessions };
       if (name === 'aqua_student_championship_v1') return { data: state.studentResponse };
       if (!state.readbackWrong) {
         if (name === 'aqua_open_championship_v1') {
@@ -53,7 +54,8 @@ test('open and close require confirmed RPC and complete database readback', asyn
   const h = harness();
   const opened = await changeTeacherChampionship(h.client, 'open', 'Synthetic Championship');
   assert.equal(opened.session?.status, 'OPEN'); assert.equal(opened.participants.length, 14);
-  assert.ok(h.calls.some(c => c[0] === 'championship_sessions' && c[1] === 'created_by' && c[2] === 'profile-teacher-not-auth-id'));
+  assert.ok(h.calls.some(c => c[0] === 'aqua_teacher_championship_sessions_v1'));
+  assert.equal(opened.session?.created_by, 'profile-teacher-not-auth-id');
   const closed = await changeTeacherChampionship(h.client, 'close', '', S);
   assert.equal(closed.session?.status, 'CLOSED');
   assert.ok(h.calls.some(c => c[0] === 'aqua_close_championship_v1' && c[1].p_session_id === S));

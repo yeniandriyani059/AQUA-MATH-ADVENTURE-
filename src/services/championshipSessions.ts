@@ -41,14 +41,11 @@ export async function readTeacherChampionship(client: any): Promise<Championship
   const { data: teacher } = await checked(client.from('teacher_profiles').select('id, role')
     .eq('auth_user_id', auth.user.id).eq('role', 'teacher').single());
   if (!teacher?.id || teacher.role !== 'teacher') throw new Error('Profil guru AQUA tidak valid.');
-  const { data: sessions } = await checked(client.from('championship_sessions')
-    .select('id, session_name, status, created_by').eq('created_by', teacher.id)
-    .in('status', ['OPEN', 'CLOSED']).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(2));
-  if (!Array.isArray(sessions)) throw new Error('Daftar sesi tidak valid.');
-  // A later CLOSED session must not hide an older OPEN session.
-  const { data: open } = await checked(client.from('championship_sessions')
-    .select('id, session_name, status, created_by').eq('created_by', teacher.id).eq('status', 'OPEN').limit(2));
-  if (!Array.isArray(open) || open.length > 1) throw new Error('Sesi OPEN ambigu. Hubungi pengelola.');
+  const { data: sessions } = await checked(client.rpc('aqua_teacher_championship_sessions_v1', {}, { get: true }));
+  if (!Array.isArray(sessions) || sessions.some(s => s.created_by !== teacher.id || !['OPEN', 'CLOSED'].includes(s.status)))
+    throw new Error('Daftar sesi AQUA tidak valid.');
+  const open = sessions.filter(s => s.status === 'OPEN');
+  if (open.length > 1) throw new Error('Sesi OPEN ambigu. Hubungi pengelola.');
   const session = open[0] || sessions[0] || null;
   if (!session) return { session: null, participants: [], attempts: [] };
   if (!validSessionId(session.id)) throw new Error('ID sesi tidak valid.');

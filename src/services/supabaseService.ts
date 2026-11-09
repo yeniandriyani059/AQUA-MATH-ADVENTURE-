@@ -720,6 +720,29 @@ export async function hydrateStudentProgressFromSupabase(
   return applySupabaseAttemptsAndProgressToProfile(baseProfile, attemptsRows, progressRows);
 }
 
+/** Project only this session's Championship state; preserve SOLO byte-for-byte. */
+export function projectChampionshipSession(base: StudentProfile, attempts: any[], sessionId: string): StudentProfile {
+  if (!validSessionId(sessionId)) throw new Error('ID sesi Championship tidak valid.');
+  const scoped = attempts.filter(row => row.student_id === base.id && parseGameMode(row.mode) === 'championship' && row.session_id === sessionId);
+  const projection = applySupabaseAttemptsAndProgressToProfile(base, scoped);
+  return { ...base, championship: projection.championship };
+}
+
+export async function hydrateStudentChampionshipSession(base: StudentProfile, sessionId: string): Promise<StudentProfile> {
+  if (!studentSupabase) throw new Error('Sesi siswa tidak tersedia.');
+  const { data, error } = await studentSupabase.auth.getSession();
+  if (error) throw error;
+  const token = data?.session?.access_token;
+  if (!token || data.session?.user?.id !== base.authUserId) throw new Error('Sesi siswa tidak sesuai pemilik.');
+  const client = createStudentRequestClient(token);
+  const active = await readStudentChampionship(client, base.id);
+  if (active.id !== sessionId) throw new Error('Sesi Championship berubah. Mulai ulang misi.');
+  const attempts = await readResultRows(() => client!.from('game_attempts').select('*', { count: 'exact' })
+    .eq('student_id', base.id).eq('mode', 'CHAMPIONSHIP').eq('session_id', sessionId)
+    .order('completed_at').order('id'));
+  return projectChampionshipSession(base, attempts, sessionId);
+}
+
 export interface SaveGameAttemptParams {
   authUserId?: string;
   studentId: string;
@@ -746,8 +769,10 @@ export interface SaveGameAttemptResult {
 export interface PendingSyncAttempt extends SaveGameAttemptParams {
   timestamp: number;
   score: number;
-  syncState?: 'pending' | 'sending' | 'uncertain';
+  syncState?: 'pending' | 'sending' | 'uncertain' | 'blocked';
   protocolVersion?: string;
+  championshipContract?: 'best-per-mission-v1';
+  championshipRequestId?: string;
 }
 
 const OFFLINE_QUEUE_KEY = 'aqua_math_offline_attempts_queue_v1';
@@ -769,7 +794,9 @@ const attemptSync = createAttemptSync({
     const synced = await loadVerifiedStudentResults(context.client, context.studentId);
     const { data: row } = await context.client.from('student_profiles').select('*').eq('id', context.studentId).maybeSingle();
     if (!row) return {};
-    return { updatedProfile: applySupabaseAttemptsAndProgressToProfile(mapDbRowToStudentProfile(row), synced.attemptsRows, synced.progressRows) };
+    const profile = applySupabaseAttemptsAndProgressToProfile(mapDbRowToStudentProfile(row), synced.attemptsRows, synced.progressRows);
+    return { updatedProfile: item.mode === 'championship' && item.sessionId
+      ? projectChampionshipSession(profile, synced.attemptsRows, item.sessionId) : profile };
   },
 });
 

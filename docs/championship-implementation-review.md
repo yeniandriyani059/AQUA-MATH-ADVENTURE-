@@ -1,3 +1,5 @@
+> Superseded by `docs/championship-db-finalization.md` and `docs/sql/aqua-championship.final.review.sql`. The text below records the earlier checkpoint, not the current implementation.
+
 # AQUA Championship implementation review
 
 Development branch: security/backend-auth-hardening, based on 38fd803.

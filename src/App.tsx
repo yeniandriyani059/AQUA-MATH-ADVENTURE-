@@ -46,6 +46,7 @@ import { isSupabaseConfigured, supabase } from './services/supabaseClient';
 import {
   logoutStudentAccount,
   getActiveChampionshipSession,
+  hydrateStudentChampionshipSession,
   restoreActiveStudentSessionFromSupabase,
 } from './services/supabaseService';
 import {
@@ -347,7 +348,7 @@ export default function App() {
         return;
       }
       const isUnlocked = isLocationUnlockedForProfile(currentProfile, loc.id, gameMode);
-      if (!isUnlocked) {
+      if (gameMode === 'solo' && !isUnlocked) {
         setToastNotice(
           `Lokasi ${loc.name} (Level ${loc.levelId}) masih terkunci! Selesaikan kedua lokasi di Level ${loc.levelId - 1} terlebih dahulu.`,
         );
@@ -359,6 +360,16 @@ export default function App() {
         const capturedRun = await captureMissionRun({ studentId: currentProfile.id,
           authUserId: currentProfile.authUserId || undefined, mode: gameMode, locationId: loc.id }, () => getActiveChampionshipSession(currentProfile.id));
         if (liveMissionIdentity.current !== identity) return;
+        if (capturedRun.mode === 'championship' && capturedRun.sessionId) {
+          const scoped = await hydrateStudentChampionshipSession(currentProfile, capturedRun.sessionId);
+          if (liveMissionIdentity.current !== identity) return;
+          setActiveStudent(scoped);
+          setStudents(upsertStudentInLocalStorage(scoped));
+          if (!isLocationUnlockedForProfile(scoped, loc.id, 'championship')) {
+            setToastNotice(`Lokasi ${loc.name} masih terkunci pada sesi Championship ini.`);
+            return;
+          }
+        }
         missionRun.current = capturedRun;
         soundManager.playClick();
         joystickRef.current = { x: 0, y: 0 };

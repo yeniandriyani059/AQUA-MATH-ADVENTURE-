@@ -185,3 +185,15 @@ test('backend refuses acknowledgement when RPC persisted Championship under wron
     assert.equal(writes.length, 1); assert.equal(writes[0][2].p_mode, 'CHAMPIONSHIP');
   }
 });
+
+test('Championship API forwards stable request ID to keyed RPC and permits receipt replay after closure', async () => {
+  const requestId = '22222222-2222-4222-8222-222222222222';
+  const body = { ...attempt, mode: 'championship', sessionId: '11111111-1111-4111-8111-111111111111', requestId };
+  const r = await request({ ...student, closedSession: true }, '/api/student/save-attempt', body, 'student-token');
+  assert.equal(r.status, 200); assert.equal(r.body.syncedToSupabase, true);
+  const calls = r.calls.filter(c => c[0] === 'rpc');
+  assert.equal(calls.length, 1); assert.equal(calls[0][1], 'aqua_save_championship_attempt_v1');
+  assert.equal(calls[0][2].p_request_id, requestId); assert.equal(calls[0][2].p_mode, 'CHAMPIONSHIP');
+  const bad = await request(student, '/api/student/save-attempt', { ...body, requestId: 'invalid' }, 'student-token');
+  assert.equal(bad.status, 400); assert.ok(!bad.calls.some(c => c[0] === 'rpc'));
+});

@@ -37,6 +37,7 @@ const { chromium } = require('playwright');
       if (!url.hostname.endsWith('.supabase.co')) return route.abort();
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
       const rpc = url.pathname.split('/rpc/')[1];
+      if (rpc === 'aqua_teacher_championship_sessions_v1' && req.method() === 'GET') return reply(sessions);
       if (rpc && req.method() === 'POST' && ['aqua_open_championship_v1', 'aqua_close_championship_v1'].includes(rpc)) {
         rpcCalls.push(rpc);
         if (rpc === 'aqua_open_championship_v1') {

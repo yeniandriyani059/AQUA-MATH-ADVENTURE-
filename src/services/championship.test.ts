@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { captureMissionRun, parseGameMode, confirmAttempt } from './championshipContract';
 import { createAttemptSync, QUEUE_KEY } from './attemptSync';
-import { applySupabaseAttemptsAndProgressToProfile, getActiveChampionshipSession } from './supabaseService';
+import { applySupabaseAttemptsAndProgressToProfile, getActiveChampionshipSession, projectChampionshipSession } from './supabaseService';
 import { createEmptyStudentProfile, buildChampionshipLeaderboard } from '../game/rules';
 import { getActiveGameMode, recordMissionCompletion } from './gameStorage';
 import { studentSupabase } from './supabaseClient';
@@ -21,6 +21,9 @@ class MemoryStorage implements Storage {
 function harness() {
   const storage = new MemoryStorage();
   const calls: any[] = [];
+  const rpcNames: string[] = [];
+  const receipts = new Map<string, any>();
+  let timeoutAfterCommit = false;
   let activeSession = S1;
   let fail = false;
   let returnedMode: string | null = null;
@@ -37,15 +40,20 @@ function harness() {
       return q;
     },
     rpc: async (_name: string, args: any) => {
-      calls.push(args);
+      calls.push(args); rpcNames.push(_name);
+      if (args.p_request_id && receipts.has(args.p_request_id)) return { data: receipts.get(args.p_request_id) };
       if (fail) return { error: { code: '42501' } };
       const row = { id: `id-${calls.length}`, student_id: 'student', mode: returnedMode || args.p_mode,
         session_id: returnedSession || args.p_session_id, location_id: args.p_location_id, score: args.p_correct_count * 10 };
-      rows.push(row); return { data: { success: true, attempt_id: row.id, student_id: 'student', mode: args.p_mode, score: row.score, correct_count: args.p_correct_count, wrong_count: args.p_wrong_count, attempt_number: 1 } };
+      rows.push(row);
+      const data = { success: true, attempt_id: row.id, student_id: 'student', mode: args.p_mode, score: row.score, correct_count: args.p_correct_count, wrong_count: args.p_wrong_count, attempt_number: 1 };
+      if (args.p_request_id) receipts.set(args.p_request_id, data);
+      if (timeoutAfterCommit) { timeoutAfterCommit = false; throw new Error('Synthetic lost response after commit'); }
+      return { data };
     },
   };
   const engine = createAttemptSync({ storage: () => storage, context: async () => ({ authUserId: 'owner', studentId: 'student', client }) });
-  return { engine, storage, rows, calls, client, setActive: (id: string) => { activeSession = id; }, setFail: (v: boolean) => { fail = v; }, wrongMode: () => { returnedMode = 'SOLO'; }, wrongSession: () => { returnedSession = S2; }, denyRead: () => { readDenied = true; } };
+  return { engine, storage, rows, calls, client, rpcNames, timeout: () => { timeoutAfterCommit = true; }, setActive: (id: string) => { activeSession = id; }, setFail: (v: boolean) => { fail = v; }, wrongMode: () => { returnedMode = 'SOLO'; }, wrongSession: () => { returnedSession = S2; }, denyRead: () => { readDenied = true; } };
 }
 const result = { protocolVersion: 'snapshot-free-v1', studentId: 'student', authUserId: 'owner', mode: 'championship' as const, sessionId: S1, locationId: 1, levelNumber: 1, correctCount: 9, wrongCount: 1, durationSeconds: 30, idempotencyKey: 'mission' };
 
@@ -88,14 +96,14 @@ test('wrong persisted mode/session or denied read-back holds queue and never ack
   for (const setup of ['wrongMode', 'wrongSession', 'denyRead'] as const) {
     const h = harness(); h[setup]();
     assert.equal((await h.engine.save(result)).syncedToSupabase, false);
-    assert.equal(h.engine.read()[0].syncState, 'uncertain');
+    assert.equal(h.engine.read()[0].syncState, 'blocked');
     await h.engine.flush(); assert.equal(h.calls.length, 1); assert.equal(h.calls[0].p_mode, 'CHAMPIONSHIP');
   }
 });
 
 test('uppercase Championship queue is explicit Championship; unknown modes are retained without RPC', async () => {
   for (const mode of ['CHAMPIONSHIP', 'mystery', '', null]) {
-    const h = harness(); h.storage.setItem(QUEUE_KEY, JSON.stringify([{ ...result, mode, score: 90, timestamp: 1 }]));
+    const h = harness(); h.storage.setItem(QUEUE_KEY, JSON.stringify([{ ...result, mode, score: 90, timestamp: 1, championshipContract: 'best-per-mission-v1', championshipRequestId: crypto.randomUUID() }]));
     await h.engine.flush();
     assert.equal(h.calls.length, mode === 'CHAMPIONSHIP' ? 1 : 0);
     if (h.calls.length) assert.equal(h.calls[0].p_mode, 'CHAMPIONSHIP'); else assert.equal(h.engine.read().length, 1);
@@ -192,4 +200,56 @@ test('audited integer/count contract rejects malformed pending payloads without 
     assert.equal((await h.engine.save({ ...result, ...changes })).syncedToSupabase, false);
     await h.engine.flush(); assert.equal(h.calls.length, 0); assert.equal(h.engine.read().length, 1);
   }
+});
+
+
+test('new Championship sends stable request ID to keyed RPC, including replay after lost response and CLOSED session', async () => {
+  const h = harness(); h.timeout();
+  const key = crypto.randomUUID();
+  assert.equal((await h.engine.save({ ...result, idempotencyKey: key })).syncedToSupabase, false);
+  assert.equal(h.engine.read()[0].championshipRequestId, key);
+  h.setActive(S2); // original session now closed; receipt replay remains valid.
+  const flushed = await h.engine.flush();
+  assert.equal(flushed.syncedCount, 1); assert.equal(h.rows.length, 1);
+  assert.deepEqual(h.rpcNames, ['aqua_save_championship_attempt_v1', 'aqua_save_championship_attempt_v1']);
+  assert.deepEqual(h.calls.map(c => [c.p_request_id, c.p_mode, c.p_session_id]), [[key, 'CHAMPIONSHIP', S1], [key, 'CHAMPIONSHIP', S1]]);
+});
+
+test('pre-keyed Championship queues are retained without upgrading or replaying', async () => {
+  const h = harness();
+  h.storage.setItem(QUEUE_KEY, JSON.stringify([{ ...result, score: 90, timestamp: 1, syncState: 'uncertain' }]));
+  const before = h.storage.getItem(QUEUE_KEY);
+  await h.engine.flush();
+  assert.equal(h.calls.length, 0); assert.equal(h.storage.getItem(QUEUE_KEY), before);
+});
+
+test('legitimate new Championship play receives a new request ID; account mismatch never submits the old queue', async () => {
+  const h = harness();
+  await h.engine.save({ ...result, idempotencyKey: crypto.randomUUID() });
+  await h.engine.save({ ...result, idempotencyKey: crypto.randomUUID() });
+  assert.equal(h.calls.length, 2); assert.notEqual(h.calls[0].p_request_id, h.calls[1].p_request_id);
+  h.storage.setItem(QUEUE_KEY, JSON.stringify([{ ...result, studentId: 'other-profile', authUserId: 'other-owner', score: 90, timestamp: 1, championshipContract: 'best-per-mission-v1', championshipRequestId: crypto.randomUUID(), syncState: 'uncertain' }]));
+  await h.engine.flush(); assert.equal(h.calls.length, 2); assert.equal(h.engine.read().length, 1);
+});
+
+
+test('Championship projection is session/owner scoped and preserves SOLO state', () => {
+  const base = createEmptyStudentProfile('student', 'Synthetic', 'bima');
+  base.solo.bestTotalScore = 80; base.solo.latestTotalScore = 80;
+  base.championship.totalChampionshipScore = 999; base.championship.unlockedLevel = 5;
+  const before = JSON.stringify(base);
+  const projection = projectChampionshipSession(base, [
+    { student_id: 'student', mode: 'CHAMPIONSHIP', session_id: S1, score: 60, location_id: 1 },
+    { student_id: 'student', mode: 'CHAMPIONSHIP', session_id: S1, score: 90, location_id: 1 },
+    { student_id: 'student', mode: 'CHAMPIONSHIP', session_id: S1, score: 70, location_id: 1 },
+    { student_id: 'student', mode: 'CHAMPIONSHIP', session_id: S2, score: 100, location_id: 2 },
+    { student_id: 'other', mode: 'CHAMPIONSHIP', session_id: S1, score: 100, location_id: 2 },
+    { student_id: 'student', mode: 'SOLO', session_id: null, score: 100, location_id: 2 },
+  ], S1);
+  assert.equal(projection.championship.totalChampionshipScore, 90);
+  assert.equal(projection.championship.unlockedLevel, 1);
+  assert.equal(projection.solo, base.solo); assert.equal(JSON.stringify(base), before);
+  const fresh = projectChampionshipSession(base, [], S2);
+  assert.equal(fresh.championship.totalChampionshipScore, 0); assert.equal(fresh.championship.unlockedLevel, 1);
+  assert.equal(fresh.solo.bestTotalScore, 80);
 });

@@ -50,18 +50,26 @@ export function createAttemptSync(deps: {
       write(read().filter(row => keyOf(row) !== keyOf(item)));
       return { success: true, syncedToSupabase: true, score, attemptId: saved.id, studentId: item.studentId };
     }
-    if (item.syncState === 'sending' || item.syncState === 'uncertain')
+    if (item.syncState === 'blocked') return pending('Hasil database tidak sesuai. Antrean ditahan untuk pemeriksaan.', score);
+    const keyedChampionship = mode === 'championship' && item.championshipContract === 'best-per-mission-v1' && validSessionId(item.championshipRequestId);
+    if ((item.syncState === 'sending' || item.syncState === 'uncertain') && !keyedChampionship)
       return pending('Status penyimpanan belum pasti. Antrean ditahan untuk rekonsiliasi agar tidak menggandakan nilai.', score);
     if (mode === 'championship') {
       if (!validSessionId(item.sessionId)) return pending('Sesi Championship belum terikat pada hasil ini; antrean tetap disimpan.', score);
-      const { data, error } = await ctx.client.from('championship_sessions').select('id, status').eq('id', item.sessionId).eq('status', 'OPEN').maybeSingle();
-      if (error || data?.status !== 'OPEN' || data.id !== item.sessionId) return pending('Sesi Championship tidak tersedia atau tidak aktif; antrean tetap disimpan.', score);
+      if (!keyedChampionship) return pending('Antrean Championship lama ditahan; belum memiliki kontrak request ID database yang aman.', score);
+      // Fresh writes require OPEN; uncertain retries may return a receipt after closure.
+      // This preflight is only UX; the RPC repeats the check under a row lock.
+      if (item.syncState !== 'sending' && item.syncState !== 'uncertain') {
+        const { data, error } = await ctx.client.from('championship_sessions').select('id, status').eq('id', item.sessionId).eq('status', 'OPEN').maybeSingle();
+        if (error || data?.status !== 'OPEN' || data.id !== item.sessionId) return pending('Sesi Championship tidak tersedia atau tidak aktif; antrean tetap disimpan.', score);
+      }
     }
     // Persist before sending. A crash or timeout must never silently trigger a second write.
     write(read().map(row => keyOf(row) === keyOf(item) ? { ...row, syncState: 'sending' } : row));
     let response: any;
     try {
-      response = await ctx.client.rpc('save_game_attempt', {
+      response = await ctx.client.rpc(keyedChampionship ? 'aqua_save_championship_attempt_v1' : 'save_game_attempt', {
+        ...(keyedChampionship ? { p_request_id: item.championshipRequestId } : {}),
         p_mode: mode === 'championship' ? 'CHAMPIONSHIP' : 'SOLO',
         p_level_number: item.levelNumber, p_location_id: String(item.locationId),
         p_correct_count: item.correctCount, p_wrong_count: item.wrongCount,
@@ -79,7 +87,7 @@ export function createAttemptSync(deps: {
       return pending(`Database belum mengonfirmasi hasil. ${error?.message || data?.message || 'Antrean tetap disimpan.'}`, score);
     }
     if (!await confirmAttempt(ctx.client, id, ctx.studentId, mode, item.sessionId)) {
-      write(read().map(row => keyOf(row) === keyOf(item) ? { ...row, syncState: 'uncertain' } : row));
+      write(read().map(row => keyOf(row) === keyOf(item) ? { ...row, syncState: 'blocked' } : row));
       return pending('Mode atau sesi hasil database belum sesuai. Antrean ditahan untuk pemeriksaan.', score);
     }
     const receipts = JSON.parse(deps.storage().getItem(RECEIPTS_KEY) || '{}');
@@ -108,6 +116,7 @@ export function createAttemptSync(deps: {
         try { ctx = await deps.context(); } catch { /* retain offline result */ }
         const item: PendingSyncAttempt = { ...params,
           authUserId: params.authUserId || (ctx?.studentId === params.studentId ? ctx.authUserId : undefined),
+          ...(parseGameMode(params.mode) === 'championship' ? { championshipContract: 'best-per-mission-v1' as const, championshipRequestId: validSessionId(params.idempotencyKey) ? params.idempotencyKey : crypto.randomUUID() } : {}),
           idempotencyKey: params.idempotencyKey || crypto.randomUUID(), timestamp: Date.now(), score, syncState: 'pending', protocolVersion: ATTEMPT_PROTOCOL,
         };
         const previous = read().find(row => keyOf(row) === keyOf(item));

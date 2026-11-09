@@ -1,3 +1,5 @@
+> Superseded by `docs/championship-db-finalization.md` and `docs/sql/aqua-championship.final.review.sql`. The text below records the earlier checkpoint, not the current implementation.
+
 # Championship save patch — review specification, not executable migration
 
 Status: BLOCKED on the exact production `pg_get_functiondef` output. The repository
