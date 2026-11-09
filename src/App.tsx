@@ -346,10 +346,6 @@ export default function App() {
         setToastNotice('Mode Solo Adventure sedang ditutup oleh Guru.');
         return;
       }
-      if (gameMode === 'championship' && !settings.championshipOpen) {
-        setToastNotice('Sesi Class Championship sedang ditutup oleh Guru.');
-        return;
-      }
       const isUnlocked = isLocationUnlockedForProfile(currentProfile, loc.id, gameMode);
       if (!isUnlocked) {
         setToastNotice(
@@ -361,7 +357,7 @@ export default function App() {
       const identity = liveMissionIdentity.current;
       try {
         const capturedRun = await captureMissionRun({ studentId: currentProfile.id,
-          authUserId: currentProfile.authUserId || undefined, mode: gameMode, locationId: loc.id }, getActiveChampionshipSession);
+          authUserId: currentProfile.authUserId || undefined, mode: gameMode, locationId: loc.id }, () => getActiveChampionshipSession(currentProfile.id));
         if (liveMissionIdentity.current !== identity) return;
         missionRun.current = capturedRun;
         soundManager.playClick();
@@ -1138,10 +1134,6 @@ export default function App() {
           onSwitchMode={(nextMode) => {
             if (nextMode === 'solo' && !settings.soloAdventureOpen) {
               setToastNotice('Mode Solo Adventure sedang ditutup oleh Guru.');
-              return;
-            }
-            if (nextMode === 'championship' && !settings.championshipOpen) {
-              setToastNotice('Sesi Class Championship sedang ditutup oleh Guru.');
               return;
             }
             setGameMode(nextMode);

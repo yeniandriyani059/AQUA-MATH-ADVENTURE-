@@ -76,7 +76,7 @@ export function createAttemptSync(deps: {
       // SQLSTATE means the transaction was rejected; a transport/unknown failure is ambiguous.
       const state = error && /^[0-9A-Z]{5}$/.test(error.code || '') ? 'pending' : 'uncertain';
       write(read().map(row => keyOf(row) === keyOf(item) ? { ...row, syncState: state } : row));
-      return pending('Database belum mengonfirmasi hasil. Antrean tetap disimpan.', score);
+      return pending(`Database belum mengonfirmasi hasil. ${error?.message || data?.message || 'Antrean tetap disimpan.'}`, score);
     }
     if (!await confirmAttempt(ctx.client, id, ctx.studentId, mode, item.sessionId)) {
       write(read().map(row => keyOf(row) === keyOf(item) ? { ...row, syncState: 'uncertain' } : row));

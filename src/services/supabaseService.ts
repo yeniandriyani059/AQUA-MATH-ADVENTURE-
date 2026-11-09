@@ -1,3 +1,4 @@
+import { readStudentChampionship, changeTeacherChampionship } from './championshipSessions';
 import { readResultRows } from './authoritativeResults';
 import { parseGameMode, validSessionId } from './championshipContract';
 import { createAttemptSync } from './attemptSync';
@@ -538,97 +539,21 @@ export async function syncOfficial14StudentAccounts(): Promise<{
 /**
  * Fetches the current active championship session from public.championship_sessions in Supabase.
  */
-export async function getActiveChampionshipSession(): Promise<{ id: string; session_name: string } | null> {
-  if (!isSupabaseConfigured) return null;
-  const client = (await getGameplaySupabaseClient()) || supabase;
-  if (!client) return null;
-
-  try {
-    const { data, error } = await client
-      .from('championship_sessions')
-      .select('id, session_name, status, created_at')
-      .eq('status', 'OPEN')
-      .order('created_at', { ascending: false })
-      .limit(2)
-      .maybeSingle();
-
-    if (!error && data?.status === 'OPEN' && validSessionId(data.id)) {
-      try {
-        localStorage.setItem('aqua_math_active_championship_session_id', String(data.id));
-      } catch {
-        // ignore
-      }
-      return { id: String(data.id), session_name: String(data.session_name || 'Class Championship') };
-    }
-  } catch {
-    // ignore
-  }
-
-  return null;
+export async function getActiveChampionshipSession(studentId?: string): Promise<{ id: string; session_name: string } | null> {
+  if (!studentId || !studentSupabase) throw new Error('Sesi siswa tidak tersedia.');
+  const { data, error } = await studentSupabase.auth.getSession();
+  if (error) throw error;
+  const token = data?.session?.access_token;
+  if (!token) throw new Error('Sesi siswa tidak tersedia.');
+  const client = createStudentRequestClient(token);
+  return readStudentChampionship(client, studentId);
 }
 
-/**
- * Ensures an active row exists in public.championship_sessions when Teacher opens/configures Class Championship.
- * Uses authenticated Teacher session to comply with Row Level Security.
- */
-export async function ensureActiveChampionshipSession(
-  sessionName = 'Turnamen Penyelamat Air Aqua City',
-): Promise<{ ok: boolean; sessionId?: string; message?: string }> {
-  if (!isSupabaseConfigured || !supabase) {
-    return { ok: false, message: 'Koneksi Supabase belum aktif.' };
-  }
-
+/** Official opening is confirmed by RPC and authoritative roster read-back. */
+export async function ensureActiveChampionshipSession(sessionName = 'Turnamen Penyelamat Air Aqua City') {
   const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
-  if (!teacherCheck.ok || !teacherCheck.teacherUserId) {
-    return { ok: false, message: teacherCheck.message || 'Sesi guru tidak terverifikasi.' };
-  }
-
-  try {
-    const { data: existing, error: selectErr } = await supabase
-      .from('championship_sessions')
-      .select('id, session_name, status, created_at')
-      .eq('status', 'OPEN')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (!selectErr && existing && existing.id) {
-      try {
-        localStorage.setItem('aqua_math_active_championship_session_id', String(existing.id));
-      } catch {
-        // ignore
-      }
-      return { ok: true, sessionId: String(existing.id) };
-    }
-
-    const payload = {
-      session_name: sessionName || 'Turnamen Penyelamat Air Aqua City',
-      status: 'OPEN',
-      created_by: teacherCheck.teacherUserId,
-    };
-
-    const { data: inserted, error: insertErr } = await supabase
-      .from('championship_sessions')
-      .insert(payload)
-      .select('id, session_name, status')
-      .single();
-
-    if (!insertErr && inserted && inserted.id) {
-      try {
-        localStorage.setItem('aqua_math_active_championship_session_id', String(inserted.id));
-      } catch {
-        // ignore
-      }
-      return { ok: true, sessionId: String(inserted.id) };
-    }
-
-    return {
-      ok: false,
-      message: `Gagal membuat sesi championship di Supabase: ${insertErr?.message || 'Unknown error'}`,
-    };
-  } catch (err: any) {
-    return { ok: false, message: err?.message || 'Gagal terhubung ke Supabase.' };
-  }
+  if (!teacherCheck.ok) throw new Error(teacherCheck.message || 'Guru tidak berwenang.');
+  return changeTeacherChampionship(supabase, 'open', sessionName);
 }
 
 /**

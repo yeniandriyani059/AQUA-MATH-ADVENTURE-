@@ -1,3 +1,4 @@
+import { readTeacherChampionship, changeTeacherChampionship, type ChampionshipState } from '../services/championshipSessions';
 import { createDashboardRefresh } from '../services/dashboardRefresh';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -41,6 +42,7 @@ import {
   saveStudents,
 } from '../services/gameStorage';
 import {
+  applySupabaseAttemptsAndProgressToProfile,
   adminAddBatchStudents,
   adminAddSingleStudent,
   adminDeleteStudent,
@@ -311,6 +313,57 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [classNameDraft, setClassNameDraft] = useState(settings.className);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [championshipState, setChampionshipState] = useState<ChampionshipState | null>(null);
+  const [championshipError, setChampionshipError] = useState<string | null>(null);
+  const [championshipBusy, setChampionshipBusy] = useState(false);
+  const championshipRevision = useRef(0);
+  const championshipAuthenticated = useRef(authenticated);
+  championshipAuthenticated.current = authenticated;
+  useEffect(() => {
+    setChampionshipState(null);
+    if (!authenticated) { championshipRevision.current++; return; }
+    let alive = true;
+    const refresh = async () => {
+      const revision = ++championshipRevision.current;
+      try {
+        const state = await readTeacherChampionship(supabase);
+        if (alive && revision === championshipRevision.current) {
+          setChampionshipState(state); setChampionshipError(null);
+        }
+      } catch (error) {
+        if (alive && revision === championshipRevision.current) {
+          setChampionshipState(null);
+          setChampionshipError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+    void refresh();
+    const onFocus = () => { void refresh(); };
+    window.addEventListener('focus', onFocus);
+    const timer = window.setInterval(onFocus, 15000);
+    return () => { alive = false; championshipRevision.current++; window.clearInterval(timer); window.removeEventListener('focus', onFocus); };
+  }, [authenticated]);
+  const handleChampionshipToggle = async () => {
+    if (championshipBusy || !championshipState) return;
+    setChampionshipBusy(true);
+    ++championshipRevision.current;
+    try {
+      const state = championshipState.session?.status === 'OPEN'
+        ? await changeTeacherChampionship(supabase, 'close', '', championshipState.session.id)
+        : await ensureActiveChampionshipSession(sessionNameDraft.trim() || settings.championshipSessionName);
+      if (championshipAuthenticated.current) {
+        ++championshipRevision.current;
+        setChampionshipState(state); setChampionshipError(null);
+        setStatusBanner(state.session?.status === 'OPEN' ? 'Sesi resmi dan 14 peserta dikonfirmasi Supabase.' : 'Sesi resmi ditutup di Supabase.');
+      }
+    } catch (error) {
+      if (championshipAuthenticated.current) {
+        ++championshipRevision.current;
+        setChampionshipState(null);
+        setChampionshipError(error instanceof Error ? error.message : String(error));
+      }
+    } finally { setChampionshipBusy(false); }
+  };
 
   const latestUpdateStudents = useRef(onUpdateStudents);
   latestUpdateStudents.current = onUpdateStudents;
@@ -343,7 +396,24 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     };
   }, [authenticated]);
 
-  const leaderboard = buildChampionshipLeaderboard(students);
+  // Session-only projections are separate from the student/SOLO state.
+  const championshipStudents = championshipState?.session ? championshipState.participants.flatMap(participant => {
+    const student = students.find(s => s.id === participant.student_id);
+    if (!student) return [];
+    const projection = applySupabaseAttemptsAndProgressToProfile(student, championshipState.attempts.filter(a => a.student_id === student.id));
+    projection.championship.totalChampionshipScore = Number(participant.official_score);
+    projection.championship.academicGrade = Number(participant.official_score) / 10;
+    return [projection];
+  }) : [];
+  const leaderboard = championshipStudents.map(student => {
+    const attempts = championshipState!.attempts.filter(a => a.student_id === student.id);
+    return { studentId: student.id, studentName: student.name,
+      championshipScore: student.championship.totalChampionshipScore,
+      academicGrade: student.championship.academicGrade,
+      completedLocationsCount: new Set(attempts.map(a => a.location_id)).size,
+      totalTimeSeconds: attempts.reduce((sum, a) => sum + Number(a.duration_seconds || 0), 0) };
+  }).sort((a, b) => b.championshipScore - a.championshipScore || a.totalTimeSeconds - b.totalTimeSeconds || a.studentId.localeCompare(b.studentId))
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
 
   const getStudentStatus = (s: StudentProfile): 'finished' | 'playing' | 'joined' => {
     const totalCompleted = Math.max(
@@ -526,12 +596,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       className: classNameDraft.trim() || settings.className,
     });
     onUpdateSettings(next);
-    ensureActiveChampionshipSession(next.championshipSessionName).catch(() => {});
     setStatusBanner('Pengaturan Kode Akses & Kelas berhasil disimpan!');
   };
 
   const toggleSettingFlag = (
-    key: 'accessCodeActive' | 'soloAdventureOpen' | 'championshipOpen',
+    key: 'accessCodeActive' | 'soloAdventureOpen',
   ) => {
     soundManager.playClick();
     const next = saveClassSettings({
@@ -539,9 +608,6 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       [key]: !settings[key],
     });
     onUpdateSettings(next);
-    if (key === 'championshipOpen' && next.championshipOpen) {
-      ensureActiveChampionshipSession(next.championshipSessionName).catch(() => {});
-    }
     setStatusBanner('Status akses permainan berhasil diperbarui.');
   };
 
@@ -1718,16 +1784,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => toggleSettingFlag('championshipOpen')}
+                    onClick={() => { void handleChampionshipToggle(); }}
+                    disabled={championshipBusy || !championshipState}
                     className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer shrink-0 ${
-                      settings.championshipOpen
+                      championshipState?.session?.status === 'OPEN'
                         ? 'bg-yellow-400 text-sky-950'
                         : 'bg-rose-600 text-white'
                     }`}
                   >
-                    {settings.championshipOpen ? 'SESI DIBUKA' : 'SESI DITUTUP'}
+                    {championshipBusy ? 'MEMPROSES…' : !championshipState ? 'BELUM TERVERIFIKASI' : championshipState.session?.status === 'OPEN' ? 'SESI DIBUKA' : 'SESI DITUTUP'}
                   </button>
                 </div>
+
+                {championshipError && <p role="alert" className="text-sm text-rose-300">{championshipError}</p>}
 
                 {/* 4. Danger Zone: Reset Game Data & Scores */}
                 <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-500/40 flex flex-wrap items-center justify-between gap-3 mt-4">
@@ -1899,9 +1968,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           {/* TAB 4: OFFICIAL CLASS CHAMPIONSHIP LEADERBOARD */}
           {activeTab === 'leaderboard' && (
             <div className="space-y-4">
+              {championshipError && <p role="alert">{championshipError}</p>}
               <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
                 {LEVELS.map((lvl) => {
-                  const champ = getLevelChampion(students, lvl.id);
+                  const champ = getLevelChampion(championshipStudents, lvl.id);
                   return (
                     <div
                       key={lvl.id}
@@ -1930,15 +2000,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl overflow-hidden">
                 <div className="px-5 py-3.5 border-b border-cyan-500/30 flex items-center justify-between">
                   <h3 className="text-base font-bold font-['Fredoka'] text-white">
-                    Peringkat Resmi Class Championship ({settings.championshipSessionName})
+                    Peringkat Resmi Class Championship ({championshipState?.session?.session_name || 'Belum ada sesi resmi'})
                   </h3>
                   <button
                     type="button"
-                    onClick={() => {
-                      soundManager.playClick();
-                      setResetOptions({ studentId: 'ALL', modeScope: 'CHAMPIONSHIP' });
-                      setShowResetModal(true);
-                    }}
+                    disabled
+                    title="Gunakan kendali sesi resmi; reset skor tidak diperlukan."
                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-sky-950 text-xs font-bold cursor-pointer transition-all hover:scale-105 shadow-md"
                   >
                     <RotateCcw className="w-3.5 h-3.5 stroke-[2.5]" />

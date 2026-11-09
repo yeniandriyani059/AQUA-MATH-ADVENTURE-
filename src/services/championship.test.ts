@@ -151,25 +151,18 @@ test('cached uppercase mode stays Championship and local completion never awards
   } finally { if (original) Object.defineProperty(globalThis, 'localStorage', original); else delete (globalThis as any).localStorage; }
 });
 
-test('active-session lookup never falls back to cached ID after database failure', async () => {
+test('active-session lookup never falls back to cached ID without current authenticated student context', async () => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const storage = new MemoryStorage(); storage.setItem('aqua_math_active_championship_session_id', S1);
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
   const oldSession = studentSupabase!.auth.getSession;
-  const oldFrom = studentSupabase!.from;
-  (studentSupabase!.auth as any).getSession = async () => ({ data: { session: { user: { id: 'owner' } } } });
-  let databaseError = true;
-  (studentSupabase as any).from = () => {
-    const q: any = { select() { return q; }, eq() { return q; }, order() { return q; }, limit(n: number) { assert.equal(n, 2); return q; },
-      maybeSingle: async () => databaseError ? { error: new Error('unavailable or ambiguous') } : { data: { id: S2, session_name: 'Synthetic', status: 'OPEN' } } };
-    return q;
-  };
+  (studentSupabase!.auth as any).getSession = async () => ({ data: { session: null } });
   try {
-    assert.equal(await getActiveChampionshipSession(), null);
+    await assert.rejects(getActiveChampionshipSession(), /Sesi siswa tidak tersedia/);
+    await assert.rejects(getActiveChampionshipSession('student'), /Sesi siswa tidak tersedia/);
     assert.equal(storage.getItem('aqua_math_active_championship_session_id'), S1);
-    databaseError = false; assert.equal((await getActiveChampionshipSession())?.id, S2);
   } finally {
-    studentSupabase!.auth.getSession = oldSession; studentSupabase!.from = oldFrom;
+    studentSupabase!.auth.getSession = oldSession;
     if (original) Object.defineProperty(globalThis, 'localStorage', original); else delete (globalThis as any).localStorage;
   }
 });
