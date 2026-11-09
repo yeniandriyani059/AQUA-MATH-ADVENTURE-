@@ -19,5 +19,11 @@
       "source": "/((?!api(?:/|$)).*)",
       "destination": "/index.html"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "main": true,
+      "security/backend-auth-hardening": false
+    }
+  }
 }
