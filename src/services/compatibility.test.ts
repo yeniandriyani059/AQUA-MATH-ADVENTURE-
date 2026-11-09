@@ -1,8 +1,9 @@
+import { supabase } from './supabaseClient';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAttemptSync, QUEUE_KEY } from './attemptSync';
 import { createTeacherSessionAccess } from './teacherSession';
-import { adminAddSingleStudent, adminAddBatchStudents, syncOfficial14StudentAccounts, resetStudentPasswordByTeacher, registerStudentProfile } from './supabaseService';
+import { adminAddSingleStudent, adminAddBatchStudents, syncOfficial14StudentAccounts, resetStudentPasswordByTeacher, registerStudentProfile, executeResetStudentScoresAndProgress } from './supabaseService';
 
 class MemoryStorage implements Storage {
   data = new Map<string, string>();
@@ -199,4 +200,29 @@ test('teacher identity change while backend verification is pending invalidates 
     token = 'B'; return new Response(JSON.stringify({ ok: true }));
   }) as typeof fetch);
   assert.equal(await session.verify('A'), null);
+});
+
+
+test('disabled destructive reset makes no Auth/network/database calls and preserves every cache and queue', async () => {
+  const storage = new MemoryStorage();
+  storage.setItem('aqua_math_students_v1', JSON.stringify([{ id: 'synthetic', solo: { bestTotalScore: 80 } }]));
+  storage.setItem(QUEUE_KEY, JSON.stringify([{ studentId: 'synthetic', mode: 'championship', sessionId: 'held' }]));
+  const before = [...storage.data.entries()];
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const oldFetch = globalThis.fetch;
+  const oldFrom = supabase!.from;
+  let calls = 0;
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+  globalThis.fetch = async () => { calls++; throw new Error('No network allowed'); };
+  (supabase as any).from = () => { calls++; throw new Error('No DB call allowed'); };
+  try {
+    for (const studentId of ['ALL', 'synthetic']) for (const modeScope of ['ALL', 'SOLO', 'CHAMPIONSHIP'] as const) {
+      const result = await executeResetStudentScoresAndProgress({ studentId, modeScope });
+      assert.equal(result.ok, false); assert.match(result.message, /dinonaktifkan/);
+    }
+    assert.equal(calls, 0); assert.deepEqual([...storage.data.entries()], before);
+  } finally {
+    globalThis.fetch = oldFetch; supabase!.from = oldFrom;
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor); else delete (globalThis as any).localStorage;
+  }
 });

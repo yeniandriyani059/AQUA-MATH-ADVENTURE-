@@ -276,7 +276,7 @@ test('applySupabaseAttemptsAndProgressToProfile hydrates student scores and unlo
   assert.equal(hydrated.championship.totalChampionshipScore, 0);
 });
 
-test('getResetGameDataPreview, exportResetGameDataBackup, and executeResetStudentScoresAndProgress require verified teacher session', async () => {
+test('reset preview requires teacher session and destructive execution remains unavailable', async () => {
   const preview = await getResetGameDataPreview({ studentId: 'ALL', modeScope: 'ALL' });
   assert.equal(preview.ok, false);
   assert.match(preview.message || '', /Sesi.*guru/i);
@@ -288,6 +288,6 @@ test('getResetGameDataPreview, exportResetGameDataBackup, and executeResetStuden
 
   const reset = await executeResetStudentScoresAndProgress({ studentId: 'ALL', modeScope: 'ALL' });
   assert.equal(reset.ok, false);
-  assert.match(reset.message || '', /Sesi.*guru/i);
+  assert.match(reset.message || '', /dinonaktifkan/i);
 });
 

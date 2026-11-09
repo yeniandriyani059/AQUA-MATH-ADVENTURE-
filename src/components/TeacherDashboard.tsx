@@ -1806,16 +1806,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       <span>Reset Nilai & Progres Permainan</span>
                     </div>
                     <div className="text-xs text-rose-300/80 mt-0.5">
-                      Hapus skor/progres permainan dari Supabase (Solo & Championship). Seluruh 14 akun siswa tetap utuh.
+                      Reset penghapusan dinonaktifkan. Nilai SOLO, arsip Championship, dan akun siswa dipertahankan.
                     </div>
                   </div>
                   <button
                     type="button"
-                    onClick={() => {
-                      soundManager.playClick();
-                      setResetOptions({ studentId: 'ALL', modeScope: 'ALL' });
-                      setShowResetModal(true);
-                    }}
+                    disabled
+                    title="Reset penghapusan dinonaktifkan; nilai dan arsip dipertahankan."
                     className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-['Fredoka'] font-bold text-xs shadow-md cursor-pointer transition-all hover:scale-105 flex items-center gap-1.5"
                   >
                     <RotateCcw className="w-3.5 h-3.5 stroke-[2.5]" />

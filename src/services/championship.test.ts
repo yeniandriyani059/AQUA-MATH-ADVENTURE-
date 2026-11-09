@@ -1,3 +1,4 @@
+import { MISSION_LOCATIONS, LEVELS } from '../data/locations';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { captureMissionRun, parseGameMode, confirmAttempt } from './championshipContract';
@@ -252,4 +253,20 @@ test('Championship projection is session/owner scoped and preserves SOLO state',
   const fresh = projectChampionshipSession(base, [], S2);
   assert.equal(fresh.championship.totalChampionshipScore, 0); assert.equal(fresh.championship.unlockedLevel, 1);
   assert.equal(fresh.solo.bestTotalScore, 80);
+});
+
+
+test('all 10 actual game locations match caller coordinates, SQL level mapping and Championship wire types', async () => {
+  assert.deepEqual(MISSION_LOCATIONS.map(loc => loc.id), [1,2,3,4,5,6,7,8,9,10]);
+  const h = harness();
+  for (const loc of MISSION_LOCATIONS) {
+    // This is the gameStorage production formula; metadata must agree with it.
+    const levelNumber = Math.ceil(loc.id / 2);
+    assert.equal(levelNumber, loc.levelId);
+    assert.ok(LEVELS.find(level => level.id === loc.levelId)?.locationIds.includes(loc.id));
+    assert.equal((await h.engine.save({ ...result, locationId: loc.id, levelNumber, idempotencyKey: crypto.randomUUID() })).syncedToSupabase, true);
+    const args = h.calls.at(-1);
+    assert.equal(args.p_location_id, String(loc.id)); assert.equal(typeof args.p_location_id, 'string');
+    assert.equal(args.p_level_number, loc.levelId); assert.equal(args.p_mode, 'CHAMPIONSHIP');
+  }
 });

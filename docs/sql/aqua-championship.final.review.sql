@@ -1,4 +1,7 @@
 -- FINAL REVIEW ARTIFACT. DO NOT RUN WITHOUT APPROVAL.
+-- STATUS: NOT READY FOR MIGRATION while legacy destructive reset paths remain active.
+-- See docs/championship-last-review.md; NO ACTION foreign keys are intentional.
+-- Disabling reset only on the candidate does not secure the older main website.
 -- One transaction; no historical data UPDATE/DELETE or SOLO rewrite.
 -- Requires execution AS THE CURRENT OWNER of public.save_game_attempt.
 -- Preserves original function body exactly in a non-exposed private schema.

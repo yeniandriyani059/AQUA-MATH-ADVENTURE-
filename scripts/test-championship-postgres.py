@@ -187,8 +187,15 @@ def main():
         value('SELECT '+legacy(FOREIGN_SESSION,correct=6)+';',OWNERS[0]);value('SELECT '+legacy(FOREIGN_SESSION,correct=7)+';',OWNERS[0])
         assert score(FOREIGN_SESSION)==130
         check('legacy AQUA contract works with best score; cross-session key reuse denied; other app unchanged')
-        # Completion is based on distinct missions, not repeated attempts.
-        for location in range(1,11):value('SELECT '+keyed(session3,correct=10,location=location)+';',OWNERS[1])
+        # Read actual game metadata, not an independently invented list of locations.
+        meta=subprocess.run(['node','--import','tsx','--input-type=module','-e',"import { MISSION_LOCATIONS } from './src/data/locations.ts'; console.log(JSON.stringify(MISSION_LOCATIONS.map(({id,levelId})=>({id,levelId}))));"],cwd=ROOT,text=True,capture_output=True,timeout=10)
+        assert meta.returncode==0,meta.stderr
+        locations=json.loads(meta.stdout)
+        assert [loc['id'] for loc in locations]==list(range(1,11))
+        for loc in locations:
+            assert loc['levelId']==(loc['id']+1)//2
+            value('SELECT '+keyed(session3,correct=10,location=loc['id'])+';',OWNERS[1])
+        check('all 10 real game location IDs and level relationships accepted by the actual SQL')
         value('SELECT '+keyed(session3,correct=0,location=1)+';',OWNERS[1])
         assert score(session3,ROSTER[1])==1000
         assert sql(f"SELECT completion_status FROM public.championship_participants WHERE session_id='{session3}' AND student_id='{ROSTER[1]}';")=='COMPLETED'
@@ -214,6 +221,38 @@ def main():
         assert 0<own<all_count
         sql("INSERT INTO public.game_attempts DEFAULT VALUES;",OWNERS[0],expect_error='42501')
         check('existing student SELECT RLS retained; direct game_attempt writes still forbidden')
+        # Destructive legacy reset compatibility, ONLY in this disposable fixture.
+        before_reset=snapshot_solo()
+        # Initially the fixture has SELECT grants only; denied operations cannot erase scores.
+        sql("DELETE FROM public.game_attempts;",TEACHER,expect_error='42501')
+        sql("GRANT DELETE ON public.game_attempts,public.game_progress,public.championship_sessions,public.championship_participants TO authenticated;")
+        # A DELETE grant without a DELETE/ALL RLS policy deletes zero rows.
+        sql("DELETE FROM public.game_attempts;DELETE FROM public.game_progress;",TEACHER)
+        assert snapshot_solo()==before_reset
+        check('SELECT-only RLS denies/filters legacy deletes without changing scores')
+        # Simulate the separately authorized deleter that a legacy reset would need.
+        # These policies are TEST-ONLY and are never included in the migration.
+        for table in ('game_attempts','game_progress','championship_participants'):
+            sql(f"CREATE POLICY synthetic_teacher_delete ON public.{table} FOR DELETE TO authenticated USING(auth.uid()='{TEACHER}'::uuid AND student_id=ANY(public.aqua_championship_roster_v1()));")
+        # Roster helper is intentionally private to RPCs, so the test policy uses an explicit scoped list.
+        for table in ('game_attempts','game_progress','championship_participants'):
+            sql(f"ALTER POLICY synthetic_teacher_delete ON public.{table} USING(auth.uid()='{TEACHER}'::uuid AND student_id IN ('{ROSTER[0]}'::uuid,'{ROSTER[1]}'::uuid,'{ROSTER[-1]}'::uuid));")
+        sql(f"CREATE POLICY synthetic_teacher_delete ON public.championship_sessions FOR DELETE TO authenticated USING(auth.uid()='{TEACHER}'::uuid AND created_by='{TP}'::uuid);")
+        error=sql(f"DELETE FROM public.game_attempts WHERE id='{results[0]['attempt_id']}';",TEACHER,expect_error='23503')
+        assert 'attempt_requests_v1_attempt_id_fkey' in error
+        error=sql(f"BEGIN;DELETE FROM public.championship_participants WHERE session_id='{session2}';DELETE FROM public.championship_sessions WHERE id='{session2}';COMMIT;",expect_error='23503')
+        assert 'sessions_v1_session_id_fkey' in error
+        assert snapshot_solo()==before_reset
+        check('non-cascading FK blocks deletion of receipted attempts and an otherwise empty managed session')
+        # Mirror separate REST transactions: first DELETE fails, but a subsequent
+        # progress DELETE can still succeed. Roll it back here to retain test baselines.
+        sql('DELETE FROM public.game_attempts;',TEACHER,expect_error='23503')
+        probe=sql('BEGIN;DELETE FROM public.game_progress;SELECT count(*) FROM public.game_progress;ROLLBACK;',TEACHER)
+        assert probe.splitlines()[-1]=='0'
+        probe=sql(f"BEGIN;DELETE FROM public.championship_participants WHERE student_id='{ROSTER[-1]}';SELECT count(*) FROM public.championship_participants WHERE student_id='{ROSTER[-1]}';ROLLBACK;",TEACHER)
+        assert probe.splitlines()[-1]=='0'
+        assert snapshot_solo()==before_reset
+        check('legacy multi-request reset is NOT atomic: later progress/unused membership deletes remain possible; rollback probes preserve SOLO')
         print(f'ALL {passed} POSTGRESQL SCENARIOS PASSED (synthetic fixture; no production access).',flush=True)
     finally:
         docker('rm','--force',NAME)

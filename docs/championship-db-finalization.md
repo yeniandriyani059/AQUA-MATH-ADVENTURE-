@@ -1,3 +1,5 @@
+> Latest review: **NOT READY FOR MIGRATION** until legacy destructive reset execution is safely retired. See `docs/championship-last-review.md`. Candidate guard alone does not patch the old main website.
+
 # Championship database patch — final review
 
 Prepared on security/backend-auth-hardening after 9ba11b6. NOT applied to Supabase,

@@ -2191,11 +2191,7 @@ export async function exportResetGameDataBackup(
   }
 }
 
-/**
- * Executes the actual data reset for scores and progress (game_attempts, game_progress, championship_participants)
- * WITHOUT deleting student accounts (auth.users, student_profiles, teacher_profiles).
- * Clears local storage caches and re-syncs fresh state from Supabase.
- */
+/** Destructive legacy reset is unavailable: shared DB operations are not atomic. */
 export async function executeResetStudentScoresAndProgress(
   options: ResetGameDataOptions,
 ): Promise<{
@@ -2206,95 +2202,6 @@ export async function executeResetStudentScoresAndProgress(
   deletedParticipantsCount?: number;
   updatedStudents?: StudentProfile[];
 }> {
-  if (!isSupabaseConfigured || !supabase) {
-    return { ok: false, message: 'Koneksi Supabase belum aktif.' };
-  }
-
-  const teacherCheck = await ensureVerifiedTeacherSessionAndProfile();
-  if (!teacherCheck.ok) {
-    return { ok: false, message: teacherCheck.message || 'Sesi guru tidak terverifikasi.' };
-  }
-
-  try {
-    const studentId = options.studentId || 'ALL';
-    const modeScope = options.modeScope || 'ALL';
-
-    // 1. Delete game_attempts
-    let attDelQuery = supabase.from('game_attempts').delete();
-    if (studentId !== 'ALL') {
-      attDelQuery = attDelQuery.eq('student_id', studentId);
-    }
-    if (modeScope === 'SOLO') {
-      attDelQuery = attDelQuery.in('mode', ['solo', 'SOLO']);
-    } else if (modeScope === 'CHAMPIONSHIP') {
-      attDelQuery = attDelQuery.in('mode', ['championship', 'CHAMPIONSHIP']);
-    }
-    const { data: attDeleted, error: attErr } = await attDelQuery.select('id');
-
-    // 2. Delete game_progress
-    let progDelQuery = supabase.from('game_progress').delete();
-    if (studentId !== 'ALL') {
-      progDelQuery = progDelQuery.eq('student_id', studentId);
-    }
-    if (modeScope === 'SOLO') {
-      progDelQuery = progDelQuery.in('mode', ['solo', 'SOLO']);
-    } else if (modeScope === 'CHAMPIONSHIP') {
-      progDelQuery = progDelQuery.in('mode', ['championship', 'CHAMPIONSHIP']);
-    }
-    const { data: progDeleted, error: progErr } = await progDelQuery.select('id');
-
-    // 3. Delete championship_participants if scope involves Championship
-    let partDeletedCount = 0;
-    if (modeScope === 'ALL' || modeScope === 'CHAMPIONSHIP') {
-      let partDelQuery = supabase.from('championship_participants').delete();
-      if (studentId !== 'ALL') {
-        partDelQuery = partDelQuery.eq('student_id', studentId);
-      }
-      const { data: partDeleted } = await partDelQuery.select('id');
-      partDeletedCount = partDeleted?.length || 0;
-    }
-
-    if (attErr || progErr) {
-      return {
-        ok: false,
-        message: `Gagal menghapus data permainan dari Supabase: ${attErr?.message || progErr?.message}`,
-      };
-    }
-
-    // 4. Update student_profiles.championship_data to clear snapshot
-    if (modeScope === 'ALL' || modeScope === 'CHAMPIONSHIP') {
-      let profQuery = supabase.from('student_profiles').update({ championship_data: {} });
-      if (studentId !== 'ALL') {
-        profQuery = profQuery.eq('id', studentId);
-      } else {
-        profQuery = profQuery.neq('id', '00000000-0000-0000-0000-000000000000');
-      }
-      await profQuery;
-    }
-
-    // 5. Invalidate / Clear local storage caches so stale local data cannot restore old scores
-    try {
-      localStorage.removeItem('aqua_math_students_v1');
-      localStorage.removeItem('aqua_math_offline_attempts_queue_v1');
-    } catch {
-      // ignore
-    }
-
-    // 6. Fetch fresh, verified Teacher Dashboard data from Supabase
-    const freshData = await getTeacherDashboardData();
-
-    const attemptsCount = attDeleted?.length || 0;
-    const progressCount = progDeleted?.length || 0;
-
-    return {
-      ok: true,
-      deletedAttemptsCount: attemptsCount,
-      deletedProgressCount: progressCount,
-      deletedParticipantsCount: partDeletedCount,
-      updatedStudents: freshData.students,
-      message: `Berhasil mereset data permainan (${attemptsCount} percobaaan, ${progressCount} progres). Seluruh akun siswa tetap aman!`,
-    };
-  } catch (err: any) {
-    return { ok: false, message: err?.message || 'Gagal menjalankan reset data permainan.' };
-  }
+  // Fail before Auth, database calls or cache/queue mutation, including stale UI callers.
+  return { ok: false, message: 'Reset penghapusan dinonaktifkan untuk melindungi nilai, arsip Championship, dan antrean offline. Gunakan kendali buka/tutup sesi resmi.' };
 }
