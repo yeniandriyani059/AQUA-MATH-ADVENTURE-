@@ -1,3 +1,4 @@
+import { HISTORY_LABELS, soloHistoryStatus, championshipHistoryStatus, matchesHistoryFilter, type HistoryFilter } from '../services/studentHistoryStatus';
 import { readTeacherChampionship, changeTeacherChampionship, type ChampionshipState } from '../services/championshipSessions';
 import { createDashboardRefresh } from '../services/dashboardRefresh';
 import React, { useEffect, useRef, useState } from 'react';
@@ -302,9 +303,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   const [participantSearch, setParticipantSearch] = useState('');
   const [participantLevelFilter, setParticipantLevelFilter] = useState<number | 'all'>('all');
-  const [participantStatusFilter, setParticipantStatusFilter] = useState<
-    'all' | 'finished' | 'playing' | 'joined'
-  >('all');
+  const [participantStatusFilter, setParticipantStatusFilter] = useState<HistoryFilter>('all');
+  const [activityMode, setActivityMode] = useState<'solo' | 'championship'>('solo');
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(students[0]?.id || null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -415,35 +415,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   }).sort((a, b) => b.championshipScore - a.championshipScore || a.totalTimeSeconds - b.totalTimeSeconds || a.studentId.localeCompare(b.studentId))
     .map((entry, index) => ({ ...entry, rank: index + 1 }));
 
-  const getStudentStatus = (s: StudentProfile): 'finished' | 'playing' | 'joined' => {
-    const totalCompleted = Math.max(
-      Object.keys(s.solo.locations).length,
-      Object.keys(s.championship.locations).length,
-    );
-    if (totalCompleted >= 10 || s.championship.completedLevels.length >= 5) {
-      return 'finished';
-    }
-    if (
-      s.solo.latestTotalScore > 0 ||
-      s.championship.totalChampionshipScore > 0 ||
-      totalCompleted > 0
-    ) {
-      return 'playing';
-    }
-    return 'joined';
-  };
+  const activityModeLabel = activityMode === 'solo' ? 'SOLO' : 'Championship';
+  const activityAvailable = activityMode === 'solo' || championshipState !== null;
+  const getStudentStatus = (student: StudentProfile, mode = activityMode) => mode === 'solo'
+    ? soloHistoryStatus(student) : championshipHistoryStatus(student.id, championshipState);
+  const getActivityLevel = (student: StudentProfile) => activityMode === 'solo' ? student.solo.unlockedLevel
+    : championshipStudents.find(s => s.id === student.id)?.championship.unlockedLevel;
+  const getActivityScore = (student: StudentProfile) => activityMode === 'solo' ? student.solo.bestTotalScore
+    : championshipState?.participants.find(p => p.student_id === student.id)?.official_score;
 
   const filteredStudents = students.filter((s) => {
     if (participantSearch.trim()) {
       const q = participantSearch.toLowerCase();
       if (!s.name.toLowerCase().includes(q)) return false;
     }
-    const maxLvl = Math.max(s.solo.unlockedLevel, s.championship.unlockedLevel);
-    if (participantLevelFilter !== 'all' && maxLvl < participantLevelFilter) {
+    const activityLevel = getActivityLevel(s);
+    if (participantLevelFilter !== 'all' && (activityLevel === undefined || activityLevel < participantLevelFilter)) {
       return false;
     }
     const status = getStudentStatus(s);
-    if (participantStatusFilter !== 'all' && status !== participantStatusFilter) {
+    if (!matchesHistoryFilter(status, participantStatusFilter)) {
       return false;
     }
     return true;
@@ -453,8 +444,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     students.find((s) => s.id === selectedStudentId) || students[0] || null;
 
   const finishedCount = students.filter((s) => getStudentStatus(s) === 'finished').length;
-  const playingCount = students.filter((s) => getStudentStatus(s) === 'playing').length;
-  const joinedCount = students.filter((s) => getStudentStatus(s) === 'joined').length;
+  const playedCount = students.filter((s) => matchesHistoryFilter(getStudentStatus(s), 'played')).length;
 
   const totalChampScore = students.reduce(
     (acc, s) => acc + s.championship.totalChampionshipScore,
@@ -1126,6 +1116,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           {/* TAB 1: PARTICIPANT MONITORING & CHARTS */}
           {activeTab === 'monitoring' && (
             <div className="space-y-5">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-cyan-200">
+                <label htmlFor="activity-history-mode" className="font-bold">Riwayat aktivitas:</label>
+                <select id="activity-history-mode" value={activityMode}
+                  onChange={event => { setActivityMode(event.target.value as 'solo' | 'championship'); setParticipantStatusFilter('all'); setParticipantLevelFilter('all'); }}
+                  className="bg-sky-900 border border-cyan-500/40 rounded-lg px-2 py-1 text-white">
+                  <option value="solo">SOLO</option><option value="championship">Championship</option>
+                </select>
+                <span>Status berdasarkan riwayat hasil, bukan aktivitas saat ini.</span>
+              </div>
               {/* 4 Real Metric Summary Cards */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
                 <div className="bg-sky-950 border-2 border-cyan-500/50 rounded-2xl p-4">
@@ -1143,33 +1142,33 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
                 <div className="bg-sky-950 border-2 border-yellow-400/50 rounded-2xl p-4">
                   <div className="flex items-center justify-between text-xs font-bold text-yellow-300">
-                    <span>AKTIF BERMAIN</span>
+                    <span>PERNAH BERMAIN {activityModeLabel}</span>
                     <Activity className="w-4 h-4 text-yellow-400" />
                   </div>
                   <div className="text-2xl font-extrabold font-mono text-yellow-300 mt-1">
-                    {playingCount} Siswa
+                    {activityAvailable ? playedCount : '—'} Siswa
                   </div>
                   <div className="text-[11px] text-cyan-200 mt-1">
-                    Sedang aktif menyelesaikan misi
+                    {activityAvailable ? 'Memiliki riwayat hasil, termasuk yang sudah selesai' : 'Riwayat belum terverifikasi'}
                   </div>
                 </div>
 
                 <div className="bg-sky-950 border-2 border-emerald-400/50 rounded-2xl p-4">
                   <div className="flex items-center justify-between text-xs font-bold text-emerald-300">
-                    <span>SELESAI 10 MISI</span>
+                    <span>SELESAI 10 MISI {activityModeLabel}</span>
                     <UserCheck className="w-4 h-4 text-emerald-400" />
                   </div>
                   <div className="text-2xl font-extrabold font-mono text-emerald-300 mt-1">
-                    {finishedCount} Siswa
+                    {activityAvailable ? finishedCount : '—'} Siswa
                   </div>
                   <div className="text-[11px] text-cyan-200 mt-1">
-                    Tuntas seluruh level Aqua City
+                    Sepuluh lokasi selesai pada mode yang dipilih
                   </div>
                 </div>
 
                 <div className="bg-sky-950 border-2 border-sky-400/50 rounded-2xl p-4">
                   <div className="flex items-center justify-between text-xs font-bold text-cyan-200">
-                    <span>RATA-RATA KELAS</span>
+                    <span>RATA-RATA CHAMPIONSHIP</span>
                     <Trophy className="w-4 h-4 text-yellow-300" />
                   </div>
                   <div className="text-2xl font-extrabold font-mono text-white mt-1">
@@ -1231,7 +1230,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       {/* Filter by Level */}
                       <div className="space-y-1">
                         <div className="text-[10px] font-bold uppercase text-cyan-300">
-                          Filter Level:
+                          Filter Level {activityModeLabel}:
                         </div>
                         <div className="flex flex-wrap gap-1">
                           {(['all', 1, 2, 3, 4, 5] as const).map((lvl) => (
@@ -1254,19 +1253,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       {/* Filter by Status */}
                       <div className="space-y-1">
                         <div className="text-[10px] font-bold uppercase text-cyan-300">
-                          Filter Status:
+                          Filter Riwayat {activityModeLabel}:
                         </div>
                         <div className="grid grid-cols-2 gap-1 text-[10px]">
                           {[
                             { key: 'all', label: 'Semua Status' },
-                            { key: 'finished', label: 'Selesai Misi' },
-                            { key: 'playing', label: 'Bermain' },
-                            { key: 'joined', label: 'Baru Bergabung' },
+                            { key: 'finished', label: 'Selesai 10 Misi' },
+                            { key: 'played', label: 'Pernah Bermain' },
+                            { key: 'not_started', label: 'Belum Ada Hasil' },
                           ].map((st) => (
                             <button
                               key={st.key}
                               type="button"
-                              onClick={() => setParticipantStatusFilter(st.key as any)}
+                              onClick={() => setParticipantStatusFilter(st.key as HistoryFilter)}
                               className={`px-2 py-1 rounded-md font-bold cursor-pointer text-center truncate ${
                                 participantStatusFilter === st.key
                                   ? 'bg-cyan-400 text-sky-950 font-extrabold'
@@ -1289,11 +1288,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                           filteredStudents.map((s) => {
                             const status = getStudentStatus(s);
                             const isSelected = selectedStudent?.id === s.id;
-                            const maxLvl = Math.max(s.solo.unlockedLevel, s.championship.unlockedLevel);
+                            const activityLevel = getActivityLevel(s);
 
                             return (
                               <div
                                 key={s.id}
+                                data-testid={`student-history-${s.id}`}
                                 onClick={() => setSelectedStudentId(s.id)}
                                 className={`p-2 rounded-xl border flex items-center justify-between gap-2 cursor-pointer transition-all ${
                                   isSelected
@@ -1311,7 +1311,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                       {s.name}
                                     </div>
                                     <div className="text-[10px] text-cyan-200 font-mono">
-                                      Lv.{maxLvl}/5 · Skor: {s.championship.totalChampionshipScore}
+                                      {activityModeLabel} · Lv.{activityLevel ?? '—'}/5 · Skor: {getActivityScore(s) ?? '—'}
                                     </div>
                                   </div>
                                 </div>
@@ -1320,16 +1320,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded shrink-0 ${
                                     status === 'finished'
                                       ? 'bg-emerald-400 text-sky-950'
-                                      : status === 'playing'
+                                      : status === 'played'
                                         ? 'bg-amber-400 text-sky-950'
                                         : 'bg-cyan-900 text-cyan-200 border border-cyan-400/40'
                                   }`}
                                 >
-                                  {status === 'finished'
-                                    ? 'Selesai'
-                                    : status === 'playing'
-                                      ? 'Bermain'
-                                      : 'Bergabung'}
+                                  {HISTORY_LABELS[status]}
                                 </span>
                               </div>
                             );
@@ -1352,26 +1348,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             className="w-12 h-12"
                           />
                           <div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                               <h4 className="text-base font-bold font-['Fredoka'] text-white">
                                 {selectedStudent.name}
                               </h4>
-                              <span
-                                className={`text-[10px] font-extrabold px-2 py-0.5 rounded ${
-                                  getStudentStatus(selectedStudent) === 'finished'
-                                    ? 'bg-emerald-400 text-sky-950'
-                                    : getStudentStatus(selectedStudent) === 'playing'
-                                      ? 'bg-amber-400 text-sky-950'
-                                      : 'bg-cyan-900 text-cyan-200 border border-cyan-400/40'
-                                }`}
-                              >
-                                Status:{' '}
-                                {getStudentStatus(selectedStudent) === 'finished'
-                                  ? 'Selesai Seluruh Misi'
-                                  : getStudentStatus(selectedStudent) === 'playing'
-                                    ? 'Sedang Bermain'
-                                    : 'Baru Bergabung'}
-                              </span>
+                              <div className="flex flex-wrap gap-1" aria-label="Riwayat siswa per mode">
+                                {(['solo', 'championship'] as const).map(mode => {
+                                  const status = getStudentStatus(selectedStudent, mode);
+                                  return <span key={mode} title="Riwayat hasil, bukan aktivitas real-time."
+                                    className={`text-[10px] font-extrabold px-2 py-0.5 rounded ${status === 'finished'
+                                      ? 'bg-emerald-400 text-sky-950' : status === 'played' ? 'bg-amber-400 text-sky-950'
+                                      : 'bg-cyan-900 text-cyan-200 border border-cyan-400/40'}`}>
+                                    {mode === 'solo' ? 'SOLO' : 'Championship'}: {HISTORY_LABELS[status]}
+                                  </span>;
+                                })}
+                              </div>
                             </div>
                             <div className="text-xs text-cyan-200 mt-0.5">
                               Karakter 3D:{' '}
