@@ -1,5 +1,6 @@
+import { championshipDashboardStudents } from '../services/championshipDashboard';
 import { HISTORY_LABELS, soloHistoryStatus, championshipHistoryStatus, matchesHistoryFilter, type HistoryFilter } from '../services/studentHistoryStatus';
-import { readTeacherChampionship, changeTeacherChampionship, type ChampionshipState } from '../services/championshipSessions';
+import { listTeacherChampionshipSessions, readTeacherChampionship, changeTeacherChampionship, type ChampionshipState } from '../services/championshipSessions';
 import { createDashboardRefresh } from '../services/dashboardRefresh';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -43,7 +44,6 @@ import {
   saveStudents,
 } from '../services/gameStorage';
 import {
-  applySupabaseAttemptsAndProgressToProfile,
   adminAddBatchStudents,
   adminAddSingleStudent,
   adminDeleteStudent,
@@ -65,7 +65,7 @@ import {
   updateTeacherNewPassword,
   verifyTeacherRecoverySession,
 } from '../services/supabaseService';
-import { supabase, isSupabaseConfigured, SUPABASE_SCHEMA_SQL } from '../services/supabaseClient';
+import { supabase, isSupabaseConfigured } from '../services/supabaseClient';
 import { CharacterId, ClassSettings, StudentProfile } from '../types/game';
 import { soundManager } from '../utils/sound';
 import { AquaLogoSvg, CharacterAvatarSvg, MedalBadgeSvg } from './AquaLogoSvg';
@@ -82,7 +82,7 @@ interface TeacherDashboardProps {
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   settings,
-  students,
+  students: sourceStudents,
   initialRecoveryMode = false,
   onCompletePasswordRecovery,
   onUpdateSettings,
@@ -305,7 +305,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [participantLevelFilter, setParticipantLevelFilter] = useState<number | 'all'>('all');
   const [participantStatusFilter, setParticipantStatusFilter] = useState<HistoryFilter>('all');
   const [activityMode, setActivityMode] = useState<'solo' | 'championship'>('solo');
-  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(students[0]?.id || null);
+  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(sourceStudents[0]?.id || null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [accessCodeDraft, setAccessCodeDraft] = useState(settings.accessCode);
@@ -314,6 +314,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [championshipState, setChampionshipState] = useState<ChampionshipState | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [archiveSessions, setArchiveSessions] = useState<import('../services/championshipSessions').ChampionshipSession[]>([]);
+  const [lifecycleState, setLifecycleState] = useState<ChampionshipState | null>(null);
+  const students = championshipDashboardStudents(sourceStudents, championshipState);
   const [championshipError, setChampionshipError] = useState<string | null>(null);
   const [championshipBusy, setChampionshipBusy] = useState(false);
   const championshipRevision = useRef(0);
@@ -321,18 +325,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   championshipAuthenticated.current = authenticated;
   useEffect(() => {
     setChampionshipState(null);
-    if (!authenticated) { championshipRevision.current++; return; }
+    if (!authenticated) { setLifecycleState(null); setArchiveSessions([]); championshipRevision.current++; return; }
     let alive = true;
     const refresh = async () => {
       const revision = ++championshipRevision.current;
       try {
-        const state = await readTeacherChampionship(supabase);
+        const current = await readTeacherChampionship(supabase);
+        const state = selectedSessionId ? await readTeacherChampionship(supabase, selectedSessionId) : current;
+        const archives = await listTeacherChampionshipSessions(supabase);
         if (alive && revision === championshipRevision.current) {
-          setChampionshipState(state); setChampionshipError(null);
+          setLifecycleState(current); setArchiveSessions(archives); setChampionshipState(state); setChampionshipError(null);
         }
       } catch (error) {
         if (alive && revision === championshipRevision.current) {
-          setChampionshipState(null);
+          setChampionshipState(null); setLifecycleState(null);
           setChampionshipError(error instanceof Error ? error.message : String(error));
         }
       }
@@ -342,24 +348,24 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     window.addEventListener('focus', onFocus);
     const timer = window.setInterval(onFocus, 15000);
     return () => { alive = false; championshipRevision.current++; window.clearInterval(timer); window.removeEventListener('focus', onFocus); };
-  }, [authenticated]);
+  }, [authenticated, selectedSessionId]);
   const handleChampionshipToggle = async () => {
-    if (championshipBusy || !championshipState) return;
+    if (championshipBusy || !lifecycleState || selectedSessionId) return;
     setChampionshipBusy(true);
     ++championshipRevision.current;
     try {
-      const state = championshipState.session?.status === 'OPEN'
-        ? await changeTeacherChampionship(supabase, 'close', '', championshipState.session.id)
+      const state = lifecycleState.session?.status === 'OPEN'
+        ? await changeTeacherChampionship(supabase, 'close', '', lifecycleState.session.id)
         : await ensureActiveChampionshipSession(sessionNameDraft.trim() || settings.championshipSessionName);
       if (championshipAuthenticated.current) {
         ++championshipRevision.current;
-        setChampionshipState(state); setChampionshipError(null);
+        setLifecycleState(state); setSelectedSessionId(null); setChampionshipState(state); setChampionshipError(null);
         setStatusBanner(state.session?.status === 'OPEN' ? 'Sesi resmi dan 14 peserta dikonfirmasi Supabase.' : 'Sesi resmi ditutup di Supabase.');
       }
     } catch (error) {
       if (championshipAuthenticated.current) {
         ++championshipRevision.current;
-        setChampionshipState(null);
+        setChampionshipState(null); setLifecycleState(null);
         setChampionshipError(error instanceof Error ? error.message : String(error));
       }
     } finally { setChampionshipBusy(false); }
@@ -397,14 +403,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   }, [authenticated]);
 
   // Session-only projections are separate from the student/SOLO state.
-  const championshipStudents = championshipState?.session ? championshipState.participants.flatMap(participant => {
-    const student = students.find(s => s.id === participant.student_id);
-    if (!student) return [];
-    const projection = applySupabaseAttemptsAndProgressToProfile(student, championshipState.attempts.filter(a => a.student_id === student.id));
-    projection.championship.totalChampionshipScore = Number(participant.official_score);
-    projection.championship.academicGrade = Number(participant.official_score) / 10;
-    return [projection];
-  }) : [];
+  const championshipStudents = championshipState?.session ? students.filter(student => championshipState.participants.some(p => p.student_id === student.id)) : [];
   const leaderboard = championshipStudents.map(student => {
     const attempts = championshipState!.attempts.filter(a => a.student_id === student.id);
     return { studentId: student.id, studentName: student.name,
@@ -610,6 +609,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       'Solo Best Score (1000)',
       'Nilai Akademik Solo (100)',
       'Level Terbuka Solo',
+      'Championship session_id',
+      'Championship session_name',
+      'Championship status',
       'Championship Score (1000)',
       'Nilai Akademik Championship (100)',
       'Waktu Championship (Detik)',
@@ -622,10 +624,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       s.solo.bestTotalScore,
       s.solo.academicGrade,
       s.solo.unlockedLevel,
-      s.championship.totalChampionshipScore,
-      s.championship.academicGrade,
-      s.championship.totalTimeSeconds,
-      s.championship.completedLevels.length,
+      championshipState?.session?.id || '',
+      JSON.stringify(championshipState?.session?.session_name || ''),
+      championshipState?.session?.status || 'UNVERIFIED',
+      championshipState ? s.championship.totalChampionshipScore : '',
+      championshipState ? s.championship.academicGrade : '',
+      championshipState ? s.championship.totalTimeSeconds : '',
+      championshipState ? s.championship.completedLevels.length : '',
     ]);
 
     const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
@@ -755,7 +760,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   required
                   value={resetEmailInput}
                   onChange={(e) => setResetEmailInput(e.target.value)}
-                  placeholder="Contoh: guru@email.com"
+                  placeholder="Masukkan password baru yang unik"
                   className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
                 />
               </div>
@@ -775,7 +780,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   required
                   value={teacherNameInput}
                   onChange={(e) => setTeacherNameInput(e.target.value)}
-                  placeholder="Contoh: Ibu Ani Rahmawati, S.Pd."
+                  placeholder="Masukkan password baru yang unik"
                   className="w-full px-3.5 py-2.5 rounded-2xl bg-sky-950 border-2 border-cyan-400/80 text-white font-bold text-sm focus:outline-none focus:border-yellow-400"
                 />
               </div>
@@ -960,7 +965,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5 bg-sky-950/95 overflow-y-auto pointer-events-auto"
     >
       <div className="w-full max-w-6xl bg-sky-900 border-4 border-cyan-400 rounded-3xl shadow-2xl overflow-hidden my-auto max-h-[94vh] flex flex-col">
-        {/* Top Bar */}
+          <div className="p-3 text-cyan-100">
+            <label htmlFor="championship-archive">Sesi Championship: </label>
+            <select id="championship-archive" data-testid="championship-session-select" disabled={championshipBusy} className="bg-sky-950 rounded p-2 max-w-full" value={selectedSessionId || ''} onChange={e => { setChampionshipState(null); setSelectedSessionId(e.target.value || null); }}>
+              <option value="">Sesi aktif / terakhir</option>
+              {archiveSessions.map(session => <option key={session.id} value={session.id}>{session.session_name} — {session.status} — {session.id}</option>)}
+            </select>
+            {selectedSessionId && <p>Arsip sesi terpilih, hanya baca. Kembali ke sesi aktif untuk membuka atau menutup sesi.</p>}
+            {!championshipState && <p>Data Championship belum terverifikasi; angka tidak mewakili hasil resmi.</p>}
+          </div>
         <div className="bg-sky-950 px-6 py-4 border-b-2 border-cyan-500/40 flex flex-wrap items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-3">
             <AquaLogoSvg compact className="h-11 w-auto" />
@@ -1377,14 +1390,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
                         <div className="text-right">
                           <div className="text-[10px] uppercase font-bold text-cyan-300">
-                            LEVEL TERTINGGI
+                            LEVEL {activityModeLabel}
                           </div>
                           <div className="text-xl font-mono font-extrabold text-yellow-300">
                             Level{' '}
-                            {Math.max(
-                              selectedStudent.solo?.unlockedLevel || 1,
-                              selectedStudent.championship?.unlockedLevel || 1,
-                            )}{' '}
+                            {getActivityLevel(selectedStudent) || 1}{' '}
                             / 5
                           </div>
                         </div>
@@ -1464,10 +1474,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             const cScore =
                               selectedStudent.championship.locations[loc.id]?.championshipScore;
                             const medal =
-                              selectedStudent.championship.locations[loc.id]?.medal ||
-                              selectedStudent.solo.locations[loc.id]?.medal ||
+                              (activityMode === 'solo' ? selectedStudent.solo.locations[loc.id]?.medal : selectedStudent.championship.locations[loc.id]?.medal) ||
                               'none';
-                            const isDone = sScore !== undefined || cScore !== undefined;
+                            const missionScore = activityMode === 'solo' ? sScore : cScore;
+                            const isDone = missionScore !== undefined;
 
                             return (
                               <div
@@ -1482,7 +1492,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                 <span className="text-[9px] font-mono font-bold">P{loc.id}</span>
                                 <MedalBadgeSvg medal={medal} className="w-3.5 h-3.5 mt-0.5" />
                                 <span className="text-[8px] font-mono font-bold text-yellow-300 mt-0.5">
-                                  {cScore ?? sScore ?? '-'}
+                                  {missionScore ?? '-'}
                                 </span>
                               </div>
                             );
@@ -1498,7 +1508,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <div className="bg-sky-950 border-2 border-cyan-500/40 rounded-2xl p-4 space-y-3">
                       <div className="flex items-center justify-between">
                         <h5 className="text-xs font-bold font-['Fredoka'] text-white">
-                          Grafik Progres Capaian Level (1–5)
+                          Grafik Progres {activityModeLabel} (1–5)
                         </h5>
                         <BarChart3 className="w-3.5 h-3.5 text-cyan-300" />
                       </div>
@@ -1513,7 +1523,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         ].map(({ lvl, title, color }) => {
                           const reachedCount = students.filter(
                             (s) =>
-                              Math.max(s.solo.unlockedLevel, s.championship.unlockedLevel) >= lvl,
+                              (getActivityLevel(s) || 1) >= lvl,
                           ).length;
                           const pct =
                             students.length > 0
@@ -1776,7 +1786,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   <button
                     type="button"
                     onClick={() => { void handleChampionshipToggle(); }}
-                    disabled={championshipBusy || !championshipState}
+                    disabled={championshipBusy || !championshipState || !!selectedSessionId}
                     className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer shrink-0 ${
                       championshipState?.session?.status === 'OPEN'
                         ? 'bg-yellow-400 text-sky-950'
@@ -1923,7 +1933,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       <tr key={stu.id} className="hover:bg-sky-900/40">
                         <td className="py-2.5 px-3 font-bold text-white">{stu.name}</td>
                         <td className="py-2.5 px-3 text-center font-mono font-bold text-emerald-300">
-                          Lv.{Math.max(stu.solo.unlockedLevel, stu.championship.unlockedLevel)}/5
+                          Lv.{(getActivityLevel(stu) || 1)}/5
                         </td>
                         {MISSION_LOCATIONS.map((loc) => {
                           const sScore = stu.solo.locations[loc.id]?.bestScore;
@@ -2066,7 +2076,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       <span>Manajemen 14 Akun Siswa Kelas 5 & Reset Password</span>
                     </h3>
                     <p className="text-xs text-cyan-200 mt-0.5">
-                      Kelola akun siswa (Username & Password), status aktif (<code>is_active</code>), keterhubungan <code>auth.users</code> ↔ <code>student_profiles</code>, serta unduh/cetak daftar kredensial khusus Guru.
+                      Kelola akun siswa (Username), status aktif (<code>is_active</code>), keterhubungan <code>auth.users</code> ↔ <code>student_profiles</code>, serta unduh/cetak daftar kredensial khusus Guru.
                     </p>
                   </div>
 
@@ -2162,10 +2172,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-800 hover:bg-sky-700 text-yellow-300 font-['Fredoka'] font-bold text-xs border border-yellow-400/60 cursor-pointer shadow-md"
                   >
                     <Download className="w-4 h-4 stroke-[2.5]" />
-                    <span>Unduh / Cetak Username & Password</span>
+                    <span>Unduh / Cetak Username</span>
                   </button>
 
-                  {/* 5. SQL Sinkronisasi & RLS */}
+                  {/* 5. Panduan Administrasi */}
                   <button
                     type="button"
                     onClick={() => {
@@ -2175,7 +2185,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-sky-900 hover:bg-sky-800 text-cyan-200 font-bold text-xs border border-cyan-400/40 cursor-pointer"
                   >
                     <Database className="w-3.5 h-3.5 text-cyan-300" />
-                    <span>SQL Sinkronisasi & RLS</span>
+                    <span>Panduan Administrasi</span>
                   </button>
                 </div>
               </div>
@@ -2187,7 +2197,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <div className="text-xs sm:text-sm font-bold text-amber-300 flex items-center gap-2">
                       <Database className="w-4 h-4 shrink-0" />
                       <span>
-                        SQL Sinkronisasi 14 Profil Siswa & Policy RLS (Jalankan di Supabase SQL Editor jika student_profiles terkunci RLS)
+                        Panduan Administrasi Aman
                       </span>
                     </div>
                     <button
@@ -2198,9 +2208,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       Tutup
                     </button>
                   </div>
-                  <pre className="p-3 rounded-xl bg-slate-950 border border-cyan-500/30 text-[11px] font-mono text-cyan-100 overflow-x-auto max-h-60 select-all">
-                    {SUPABASE_SCHEMA_SQL}
-                  </pre>
+                  <p className="text-sm text-cyan-100">Pengelolaan akun dan perubahan akses memerlukan persetujuan pemilik. Jangan menjalankan SQL dari browser atau memperluas RLS pada database bersama. Provisioning dan reset password belum tersedia melalui panel ini.</p>
                 </div>
               )}
 
@@ -2268,7 +2276,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             if (res.student) {
                               const nextList = [
                                 res.student,
-                                ...students.filter((s) => s.id !== res.student!.id),
+                                ...sourceStudents.filter((s) => s.id !== res.student!.id),
                               ];
                               saveStudents(nextList);
                               onUpdateStudents(nextList);
@@ -2309,7 +2317,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               const newIds = new Set(res.students.map((s) => s.id));
                               const nextList = [
                                 ...res.students,
-                                ...students.filter((s) => !newIds.has(s.id)),
+                                ...sourceStudents.filter((s) => !newIds.has(s.id)),
                               ];
                               saveStudents(nextList);
                               onUpdateStudents(nextList);
@@ -2349,7 +2357,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                 required
                                 value={singleStudentNameInput}
                                 onChange={(e) => setSingleStudentNameInput(e.target.value)}
-                                placeholder="Contoh: Afina Felisia Putri"
+                                placeholder="Masukkan password baru yang unik"
                                 className="w-full px-3.5 py-2.5 rounded-xl bg-sky-900 border-2 border-cyan-400/60 text-white text-xs sm:text-sm font-bold focus:outline-none focus:border-yellow-400"
                               />
                             </div>
@@ -2370,7 +2378,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                       e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''),
                                     )
                                   }
-                                  placeholder="Contoh: afina01"
+                                  placeholder="Masukkan password baru yang unik"
                                   className="w-full px-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/60 text-yellow-300 font-mono text-xs font-bold focus:outline-none"
                                 />
                               </div>
@@ -2386,7 +2394,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   type="text"
                                   value={singleStudentPasswordInput}
                                   onChange={(e) => setSingleStudentPasswordInput(e.target.value)}
-                                  placeholder="Contoh: Aqua@2601"
+                                  placeholder="Masukkan password baru yang unik"
                                   className="w-full px-3 py-2 rounded-xl bg-sky-900 border border-cyan-400/60 text-white font-mono text-xs font-bold focus:outline-none"
                                 />
                               </div>
@@ -2577,7 +2585,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                       nextState,
                                       resolvedAuthUid,
                                     );
-                                    const updatedList = students.map((s) =>
+                                    const updatedList = sourceStudents.map((s) =>
                                       s.id === student.id ? { ...s, isActive: nextState } : s,
                                     );
                                     saveStudents(updatedList);
@@ -2605,7 +2613,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                     onClick={() => {
                                       soundManager.playClick();
                                       setResetModalError(null);
-                                      setNewPasswordInput(spec?.defaultPassword || '');
+                                      setNewPasswordInput('');
                                       setResetTargetStudent({
                                         ...student,
                                         username: resolvedUsername,
@@ -2686,10 +2694,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               <div>
                 <h4 className="font-['Fredoka'] font-bold text-lg text-white flex items-center gap-2">
                   <KeyRound className="w-5 h-5 text-yellow-300" />
-                  <span>Daftar Kredensial Login 14 Siswa Kelas 5 (Khusus Pegangan Guru)</span>
+                  <span>Daftar Username Login 14 Siswa Kelas 5 (Khusus Pegangan Guru)</span>
                 </h4>
                 <p className="text-xs text-cyan-200">
-                  Siswa login hanya menggunakan <strong>Username</strong> dan <strong>Password</strong>. Password tidak pernah disimpan secara plaintext di database.
+                  Siswa login hanya menggunakan <strong>Username</strong> dan <strong>Password</strong>. Password tidak ditampilkan atau diekspor. Gunakan password pribadi yang telah diberikan secara aman.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -2697,16 +2705,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   type="button"
                   onClick={() => {
                     soundManager.playClick();
-                    const header = 'No,Nama Siswa,Username,Password Sementara,Karakter,Email Internal Auth,UUID Auth\n';
+                    const header = 'No,Nama Siswa,Username,Karakter,Email Internal Auth,UUID Auth\n';
                     const rows = OFFICIAL_14_STUDENTS.map(
                       (s) =>
-                        `${s.no},"${s.displayName}",${s.username},${s.defaultPassword},${s.character},${studentUsernameToInternalEmail(s.username)},${s.authUserId}`,
+                        `${s.no},"${s.displayName}",${s.username},${s.character},${studentUsernameToInternalEmail(s.username)},${s.authUserId}`,
                     ).join('\n');
                     const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = 'kredensial-14-siswa-aqua-math-adventure.csv';
+                    a.download = 'username-14-siswa-aqua-math-adventure.csv';
                     a.click();
                     URL.revokeObjectURL(url);
                   }}
@@ -2739,7 +2747,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <th className="py-2.5 px-3">No</th>
                     <th className="py-2.5 px-3">Nama Siswa</th>
                     <th className="py-2.5 px-3">Username</th>
-                    <th className="py-2.5 px-3">Password Sementara</th>
+
                     <th className="py-2.5 px-3">Karakter</th>
                     <th className="py-2.5 px-3">UUID Supabase Auth</th>
                   </tr>
@@ -2750,9 +2758,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       <td className="py-2 px-3 font-mono text-cyan-300">{s.no}</td>
                       <td className="py-2 px-3 font-bold">{s.displayName}</td>
                       <td className="py-2 px-3 font-mono font-bold text-yellow-300">{s.username}</td>
-                      <td className="py-2 px-3 font-mono font-bold text-emerald-300">
-                        {s.defaultPassword}
-                      </td>
+
                       <td className="py-2 px-3 font-bold text-cyan-200">{s.character}</td>
                       <td className="py-2 px-3 font-mono text-[10px] text-cyan-300">
                         {s.authUserId}

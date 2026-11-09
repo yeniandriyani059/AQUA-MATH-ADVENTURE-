@@ -12,7 +12,7 @@ async function main() {
   // Sign in as Dinda to have authenticated context
   await client.auth.signInWithPassword({
     email: 'dinda04@student.aquamath.id',
-    password: 'Aqua@2604',
+    password: process.env.AQUA_TEST_STUDENT_PASSWORD || '',
   });
 
   const tables = ['student_profiles', 'teacher_profiles', 'championship_sessions', 'championship_participants', 'game_attempts', 'game_progress'];

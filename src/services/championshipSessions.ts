@@ -34,7 +34,7 @@ async function rows(query: () => any) {
     return { range: async (from: number, to: number) => checked(builder.range(from, to)) };
   });
 }
-export async function readTeacherChampionship(client: any): Promise<ChampionshipState> {
+export async function readTeacherChampionship(client: any, requestedSessionId?: string): Promise<ChampionshipState> {
   if (!client) throw new Error('Koneksi Supabase belum aktif.');
   const { data: auth } = await checked(client.auth.getUser());
   if (auth?.user?.id !== AQUA_TEACHER_AUTH_ID) throw new Error('Guru AQUA tidak berwenang.');
@@ -46,7 +46,16 @@ export async function readTeacherChampionship(client: any): Promise<Championship
     throw new Error('Daftar sesi AQUA tidak valid.');
   const open = sessions.filter(s => s.status === 'OPEN');
   if (open.length > 1) throw new Error('Sesi OPEN ambigu. Hubungi pengelola.');
-  const session = open[0] || sessions[0] || null;
+  let session = open[0] || sessions[0] || null;
+  if (requestedSessionId) {
+    if (!validSessionId(requestedSessionId)) throw new Error('ID arsip tidak valid.');
+    const { data: allowed } = await checked(client.rpc('aqua_can_read_championship_session_v1', { p_session_id: requestedSessionId }, { get: true }));
+    if (allowed !== true) throw new Error('Arsip sesi AQUA tidak berwenang.');
+    const { data } = await checked(client.from('championship_sessions').select('id, session_name, status, created_by')
+      .eq('id', requestedSessionId).eq('created_by', teacher.id).single());
+    if (!data || !['OPEN', 'CLOSED'].includes(data.status)) throw new Error('Arsip sesi tidak ditemukan.');
+    session = data;
+  }
   if (!session) return { session: null, participants: [], attempts: [] };
   if (!validSessionId(session.id)) throw new Error('ID sesi tidak valid.');
   const participants = await rows(() => client.from('championship_participants')
@@ -83,4 +92,22 @@ export async function readStudentChampionship(client: any, studentId: string) {
   if (participant.student_id !== studentId || !validSessionId(participant.session_id) || participant.status !== 'OPEN' ||
     !['REGISTERED', 'PLAYING', 'COMPLETED'].includes(participant.completion_status)) throw new Error('Kepesertaan Championship tidak valid.');
   return { id: participant.session_id as string, session_name: String(participant.session_name) };
+}
+
+/** Existing read-only helper excludes sessions belonging to other applications. */
+export async function listTeacherChampionshipSessions(client: any): Promise<ChampionshipSession[]> {
+  if (!client) throw new Error('Koneksi Supabase belum aktif.');
+  const { data: auth } = await checked(client.auth.getUser());
+  if (auth?.user?.id !== AQUA_TEACHER_AUTH_ID) throw new Error('Guru AQUA tidak berwenang.');
+  const { data: teacher } = await checked(client.from('teacher_profiles').select('id, role').eq('auth_user_id', auth.user.id).eq('role', 'teacher').single());
+  if (!teacher?.id) throw new Error('Profil guru AQUA tidak valid.');
+  const sessions = await rows(() => client.from('championship_sessions').select('id, session_name, status, created_by', { count: 'exact' })
+    .eq('created_by', teacher.id).in('status', ['OPEN', 'CLOSED']).order('created_at', { ascending: false }).order('id'));
+  const result: ChampionshipSession[] = [];
+  for (const session of sessions) {
+    if (!validSessionId(session.id)) throw new Error('ID arsip tidak valid.');
+    const { data: allowed } = await checked(client.rpc('aqua_can_read_championship_session_v1', { p_session_id: session.id }, { get: true }));
+    if (allowed === true) result.push(session as ChampionshipSession);
+  }
+  return result;
 }

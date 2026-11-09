@@ -11,7 +11,7 @@ async function testCreateSession() {
   // Test sign in as teacher using valid teacher email or student email
   const { data: studentAuth } = await client.auth.signInWithPassword({
     email: 'dinda04@student.aquamath.id',
-    password: 'Aqua@2604',
+    password: process.env.AQUA_TEST_STUDENT_PASSWORD || '',
   });
 
   console.log('Student signed in:', studentAuth.user?.id);

@@ -187,7 +187,8 @@ test('formatStudentInsertError produces clear Indonesian diagnostic for 42501 RL
     message: 'new row violates row-level security policy for table "student_profiles"',
   });
   assert.equal(msg.includes('Row-Level Security (RLS)'), true);
-  assert.equal(msg.includes('Teachers can insert student profiles'), true);
+  assert.equal(msg.includes('jangan memperluas RLS'), true);
+  assert.equal(msg.includes('Jalankan SQL'), false);
 });
 
 test('mapDbRowToStudentProfile maps Supabase student_profiles row to StudentProfile with official username', () => {

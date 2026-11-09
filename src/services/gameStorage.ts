@@ -1,3 +1,9 @@
+// Remove obsolete cached hints only; preserve accounts, scores and offline queues.
+function stripLegacyCredentials(student: any) {
+  if (!student || typeof student !== 'object') return student;
+  const { tempPasswordHint, defaultPassword, ...safe } = student;
+  return safe;
+}
 import type { MissionRun } from './championshipContract';
 import { parseGameMode } from './championshipContract';
 import { verifyTeacherSession } from './teacherSession';
@@ -103,7 +109,7 @@ export function loadStudents(): StudentProfile[] {
     if (!Array.isArray(parsed)) return [];
 
     // Filter out legacy dummy / seed records
-    const cleaned = parsed.filter((s) => {
+    const cleaned = parsed.map(stripLegacyCredentials).filter((s) => {
       if (!s || !s.name) return false;
       if (typeof s.id === 'string' && s.id.startsWith('stu_demo')) return false;
       const lower = String(s.name).trim().toLowerCase();
@@ -111,7 +117,7 @@ export function loadStudents(): StudentProfile[] {
       return true;
     });
 
-    if (cleaned.length !== parsed.length) {
+    if (JSON.stringify(cleaned) !== JSON.stringify(parsed)) {
       saveStudents(cleaned);
     }
 
@@ -123,7 +129,7 @@ export function loadStudents(): StudentProfile[] {
 
 export function saveStudents(students: StudentProfile[]): void {
   try {
-    localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(students));
+    localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(students.map(stripLegacyCredentials)));
   } catch {
     // ignore
   }

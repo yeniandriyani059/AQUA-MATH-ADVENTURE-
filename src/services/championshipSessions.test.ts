@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AQUA_ROSTER_IDS, AQUA_TEACHER_AUTH_ID, changeTeacherChampionship, readStudentChampionship, readTeacherChampionship } from './championshipSessions';
+import { AQUA_ROSTER_IDS, AQUA_TEACHER_AUTH_ID, changeTeacherChampionship, listTeacherChampionshipSessions, readStudentChampionship, readTeacherChampionship } from './championshipSessions';
 
 const S = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
 function harness() {
   const calls: any[] = [];
   const state = { user: AQUA_TEACHER_AUTH_ID, role: 'teacher', profileId: AQUA_ROSTER_IDS[0] as string, active: true,
-    sessions: [] as any[], participants: [] as any[], attempts: [] as any[], studentResponse: [] as any[], error: '', rpcError: '', rpcId: S, readbackWrong: false };
+    sessions: [] as any[], unmanaged: [] as string[], participants: [] as any[], attempts: [] as any[], studentResponse: [] as any[], error: '', rpcError: '', rpcId: S, readbackWrong: false };
   const client = { auth: { getUser: async () => ({ data: { user: { id: state.user } } }) },
     from(table: string) {
       const filters: ((r: any) => boolean)[] = [];
@@ -33,7 +33,8 @@ function harness() {
     async rpc(name: string, args?: any) {
       calls.push([name, args]);
       if (state.rpcError) return { error: { message: state.rpcError } };
-      if (name === 'aqua_teacher_championship_sessions_v1') return { data: state.sessions };
+      if (name === 'aqua_teacher_championship_sessions_v1') return { data: state.sessions.filter(s => s.created_by === 'profile-teacher-not-auth-id' && !state.unmanaged.includes(s.id)).slice(0, 2) };
+      if (name === 'aqua_can_read_championship_session_v1') return { data: state.sessions.some(s => s.id === args.p_session_id && s.created_by === 'profile-teacher-not-auth-id' && !state.unmanaged.includes(s.id)) };
       if (name === 'aqua_student_championship_v1') return { data: state.studentResponse };
       if (!state.readbackWrong) {
         if (name === 'aqua_open_championship_v1') {
@@ -107,4 +108,29 @@ test('student discovery rejects foreign identity and multiple eligible sessions 
   h.state.studentResponse.push(h.state.studentResponse[0]);
   await assert.rejects(readStudentChampionship(h.client, AQUA_ROSTER_IDS[0]), /belum tersedia/);
   h.state.rpcError = 'Synthetic discovery error'; await assert.rejects(readStudentChampionship(h.client, AQUA_ROSTER_IDS[0]), /Synthetic discovery error/);
+});
+
+test('archives read explicit authorized session without changing current lifecycle', async () => {
+  const h = harness();
+  await changeTeacherChampionship(h.client, 'open', 'Current');
+  h.state.sessions.push({ id: OTHER, status: 'CLOSED', session_name: 'Archive', created_by: 'profile-teacher-not-auth-id' });
+  h.state.participants.push(...AQUA_ROSTER_IDS.map((student_id, i) => ({ id: `old-${i}`, student_id, session_id: OTHER, official_score: 100 })));
+  assert.equal((await listTeacherChampionshipSessions(h.client)).length, 2);
+  assert.equal((await readTeacherChampionship(h.client, OTHER)).session?.id, OTHER);
+  assert.equal((await readTeacherChampionship(h.client)).session?.id, S);
+  h.state.sessions[1].created_by = 'other-app';
+  await assert.rejects(readTeacherChampionship(h.client, OTHER), /berwenang|tidak valid/);
+});
+
+test('archive list includes older managed sessions beyond current RPC limit and excludes another app with same teacher', async () => {
+ const h = harness(); await changeTeacherChampionship(h.client, 'open', 'Current');
+ const older = '33333333-3333-4333-8333-333333333333';
+ const foreign = '44444444-4444-4444-8444-444444444444';
+ for (const id of [OTHER, older, foreign]) h.state.sessions.push({ id, status: 'CLOSED', session_name: id, created_by: 'profile-teacher-not-auth-id' });
+ h.state.unmanaged.push(foreign);
+ h.state.participants.push(...AQUA_ROSTER_IDS.map((student_id, i) => ({ id: `older-${i}`, student_id, session_id: older, official_score: 0 })));
+ const list = await listTeacherChampionshipSessions(h.client);
+ assert.deepEqual(list.map(s => s.id), [S, OTHER, older]);
+ assert.equal((await readTeacherChampionship(h.client, older)).session?.id, older);
+ await assert.rejects(readTeacherChampionship(h.client, foreign), /berwenang/);
 });

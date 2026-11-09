@@ -42,11 +42,13 @@ const { chromium } = require('playwright');
       if (!url.hostname.endsWith('.supabase.co')) return route.abort();
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
       const rpc = url.pathname.split('/rpc/')[1];
+      if (rpc === 'aqua_can_read_championship_session_v1') return reply(true);
       if (rpc === 'aqua_teacher_championship_sessions_v1' && req.method() === 'GET') return reply(sessions);
       if (rpc && req.method() === 'POST' && ['aqua_open_championship_v1', 'aqua_close_championship_v1'].includes(rpc)) {
         rpcCalls.push(rpc);
         if (rpc === 'aqua_open_championship_v1') {
           sessions = [{ id: SESSION, created_by: PROFILE, status: 'OPEN', session_name: 'Synthetic Championship' }];
+          attempts.push(...[100, 80].map((score, i) => ({ ...attempts[0], id: `current-${i}`, mode: 'CHAMPIONSHIP', session_id: SESSION, location_id: String(i + 1), score, correct_count: score / 10, wrong_count: 10 - score / 10 })));
           participants = roster.map((id, i) => ({ id: `synthetic-participant-${i}`, session_id: SESSION, student_id: id, official_score: i === 0 ? 180 : 0, completion_status: 'REGISTERED' }));
         } else {
           if (failClose) return reply({ message: 'Synthetic close permission denied', code: '42501' }, 403);
@@ -102,6 +104,44 @@ const { chromium } = require('playwright');
     const first = page.locator('tbody tr').filter({ hasText: 'Synthetic Student 1' }).first();
     await first.waitFor(); assert.ok((await first.innerText()).includes('180'));
     assert.equal((await first.locator('td').nth(2).innerText()).trim(), '180 / 1000');
+    const ARCHIVE = '33333333-3333-4333-8333-333333333333';
+    sessions.push({ id: ARCHIVE, created_by: PROFILE, status: 'CLOSED', session_name: 'Synthetic Older Session' });
+    participants.push(...roster.map((id, i) => ({ id: `archive-${i}`, session_id: ARCHIVE, student_id: id, official_score: i === 0 ? 70 : 0, completion_status: 'COMPLETED' })));
+    attempts.push({ ...attempts[0], id: 'archive-attempt', mode: 'CHAMPIONSHIP', session_id: ARCHIVE, score: 70, correct_count: 7, wrong_count: 3 });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.getByTestId('championship-session-select').locator(`option[value="${ARCHIVE}"]`).waitFor({ state: 'attached' });
+    await page.getByTestId('championship-session-select').selectOption(ARCHIVE);
+    await page.waitForFunction(() => document.querySelector('tbody')?.innerText.includes('70 / 1000'));
+    assert.equal((await first.locator('td').nth(2).innerText()).trim(), '70 / 1000');
+    assert.equal(await page.getByTestId('championship-session-select').inputValue(), ARCHIVE);
+    const archiveDownload = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Unduh Laporan CSV', exact: true }).click();
+    const download = await archiveDownload;
+    const csv = fs.readFileSync(await download.path(), 'utf8');
+    assert.ok(csv.includes('Championship session_id'));
+    const archiveRow = csv.split('\n').find(line => line.startsWith('"Synthetic Student 1",')).split(',');
+    assert.equal(archiveRow[3], '80'); assert.equal(archiveRow[6], ARCHIVE); assert.equal(archiveRow[9], '70');
+    await page.getByRole('button', { name: /1\. Pemantauan Siswa/ }).click();
+    await page.getByTestId(`student-history-${roster[0]}`).click();
+    await page.getByLabel('Riwayat aktivitas:').selectOption('championship');
+    await page.locator('[title^="Pos 1:"]').filter({ hasText: '70' }).waitFor();
+    assert.ok((await page.locator('[title^="Pos 1:"]').getAttribute('title')).includes('Champ: 70'));
+    await page.getByRole('button', { name: /5\. Leaderboard Class Championship/ }).click();
+
+
+    await page.getByTestId('championship-session-select').selectOption('');
+    await page.waitForFunction(() => document.querySelector('tbody')?.innerText.includes('180 / 1000'));
+    assert.equal((await first.locator('td').nth(2).innerText()).trim(), '180 / 1000');
+    const currentDownload = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Unduh Laporan CSV', exact: true }).click();
+    const currentCsv = fs.readFileSync(await (await currentDownload).path(), 'utf8');
+    const currentRow = currentCsv.split('\n').find(line => line.startsWith('"Synthetic Student 1",')).split(',');
+    assert.equal(currentRow[3], '80'); assert.equal(currentRow[6], SESSION); assert.equal(currentRow[9], '180');
+    await page.getByRole('button', { name: /1\. Pemantauan Siswa/ }).click();
+    await page.locator('[title^="Pos 1:"]').filter({ hasText: '100' }).waitFor();
+    assert.ok((await page.locator('[title^="Pos 1:"]').getAttribute('title')).includes('Champ: 100'));
+
+    console.log('PASS browser: explicit CLOSED archive 70 and current session 180 remain separate; SOLO cache unchanged');
     await page.getByRole('button', { name: /2\. Kontrol Kode Akses/ }).click();
     await page.getByRole('button', { name: 'SESI DIBUKA', exact: true }).click();
     await page.getByText('Synthetic close permission denied', { exact: true }).waitFor();
@@ -120,6 +160,8 @@ const { chromium } = require('playwright');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: '/tmp/aqua-championship-controls-mobile.png', fullPage: true });
     await page.getByRole('button', { name: /1\. Pemantauan Siswa/ }).click();
+    await page.getByRole('button', { name: 'Semua Status', exact: true }).click();
+    await page.getByTestId(`student-history-${roster[1]}`).click();
     await history.scrollIntoViewIfNeeded();
     assert.equal(await history.getByText('SOLO: Pernah Bermain', { exact: true }).isVisible(), true);
     assert.equal(await history.getByText('Championship: Belum Ada Hasil', { exact: true }).isVisible(), true);

@@ -115,7 +115,6 @@ export interface StudentProfile {
   characterId: CharacterId;
   isActive?: boolean;
   profileLinked?: boolean;
-  tempPasswordHint?: string;
   createdAt: string;
   lastActiveAt: string;
   // Strictly isolated Solo Adventure state

@@ -33,7 +33,6 @@ export interface OfficialStudentAccountSpec {
   no: number;
   displayName: string;
   username: string;
-  defaultPassword: string;
   character: 'BIMA' | 'SINTA';
   characterId: CharacterId;
   authUserId: string;
@@ -48,7 +47,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 1,
     displayName: 'Afina Felisia Putri',
     username: 'afina01',
-    defaultPassword: 'Aqua@2601',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: 'cae44b10-9331-4e44-bc28-7e737a62a49c',
@@ -57,7 +55,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 2,
     displayName: 'Afiz El Haddadi',
     username: 'afiz02',
-    defaultPassword: 'Aqua@2602',
     character: 'BIMA',
     characterId: 'bima',
     authUserId: 'be935b72-73a2-4429-955e-965168bed5ce',
@@ -66,7 +63,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 3,
     displayName: 'ARJUNA SURYA WIKRAMA',
     username: 'arjuna03',
-    defaultPassword: 'Aqua@2603',
     character: 'BIMA',
     characterId: 'bima',
     authUserId: 'f8e45914-dd24-45df-aed7-dcf34be05912',
@@ -75,7 +71,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 4,
     displayName: 'DINDA ISMAWATI',
     username: 'dinda04',
-    defaultPassword: 'Aqua@2604',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: '77b1cd3d-af92-45c8-b709-cb66ab6a9bbf',
@@ -84,7 +79,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 5,
     displayName: 'Faniya Nur Hafisah',
     username: 'faniya05',
-    defaultPassword: 'Aqua@2605',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: '570ba376-4134-4845-847f-e408ea786d81',
@@ -93,7 +87,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 6,
     displayName: 'Gista Novita Nur Amaliana',
     username: 'gista06',
-    defaultPassword: 'Aqua@2606',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: 'f1052608-bcf9-4071-9c01-89800c55273f',
@@ -102,7 +95,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 7,
     displayName: 'HANAFI MUSLIMAH',
     username: 'hanafi07',
-    defaultPassword: 'Aqua@2607',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: 'a669b5c4-62c2-4441-8f8b-484e2d85323a',
@@ -111,7 +103,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 8,
     displayName: 'Muhammad Fiqri',
     username: 'fiqri08',
-    defaultPassword: 'Aqua@2608',
     character: 'BIMA',
     characterId: 'bima',
     authUserId: 'd305d926-0db6-428c-ac50-315a0dd1c940',
@@ -120,7 +111,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 9,
     displayName: 'PUTRI DWI SEPTIANI',
     username: 'putri09',
-    defaultPassword: 'Aqua@2609',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: '3812cbe6-4d83-40f5-aa60-02be3c175a37',
@@ -129,7 +119,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 10,
     displayName: 'Revan Safi Saputra',
     username: 'revan10',
-    defaultPassword: 'Aqua@2610',
     character: 'BIMA',
     characterId: 'bima',
     authUserId: '05ca3caa-4f22-4514-80db-fff5edcc3861',
@@ -138,7 +127,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 11,
     displayName: 'Saskia Aprilianti',
     username: 'saskia11',
-    defaultPassword: 'Aqua@2611',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: '47efc5df-09b3-4362-837b-7b41223d0fb2',
@@ -147,7 +135,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 12,
     displayName: 'SHAREEFA JEHAN AMIRA',
     username: 'shareefa12',
-    defaultPassword: 'Aqua@2612',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: 'b3ad69ad-b592-405e-ae79-abea8cde7be0',
@@ -156,7 +143,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 13,
     displayName: 'Suci Mulia Sari',
     username: 'suci13',
-    defaultPassword: 'Aqua@2613',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: 'b063ade8-5267-4c36-88fb-5b485f54c228',
@@ -165,7 +151,6 @@ export const OFFICIAL_14_STUDENTS: OfficialStudentAccountSpec[] = [
     no: 14,
     displayName: 'Tiwi Safitri',
     username: 'tiwi14',
-    defaultPassword: 'Aqua@2614',
     character: 'SINTA',
     characterId: 'sinta',
     authUserId: '261109d3-2fa2-4cb1-94f1-953c540738a5',
@@ -357,7 +342,7 @@ export function mapDbRowToStudentProfile(
     characterId,
     isActive,
     profileLinked,
-    tempPasswordHint: officialSpec?.defaultPassword || existingLocal?.tempPasswordHint,
+
     createdAt,
     lastActiveAt: existingLocal?.lastActiveAt || createdAt,
     solo: existingLocal?.solo || empty.solo,
@@ -503,7 +488,7 @@ export function formatStudentInsertError(err: any): string {
     rawMsg.toLowerCase().includes('row-level security policy') ||
     rawMsg.toLowerCase().includes('permission denied')
   ) {
-    return `Gagal menambahkan profil ke tabel "student_profiles" karena kebijakan Row-Level Security (RLS) (${rawMsg}). Jalankan SQL Policy "Teachers can insert student profiles" atau blok INSERT 14 siswa pada Supabase SQL Editor.`;
+    return `Gagal menambahkan profil ke tabel "student_profiles" karena kebijakan Row-Level Security (RLS) (${rawMsg}). Hubungi pemilik aplikasi untuk pemeriksaan akses yang disetujui; jangan memperluas RLS database bersama.`;
   }
 
   return `Gagal menambahkan siswa ke Supabase: ${rawMsg}`;
@@ -1078,7 +1063,7 @@ export async function adminAddBatchStudents(
     const officialSpec = findOfficialStudentSpec({ displayName: cleanedName });
     const res = await adminAddSingleStudent(
       cleanedName,
-      officialSpec?.defaultPassword,
+      undefined,
       officialSpec?.characterId || characterId,
       officialSpec?.username,
     );
@@ -1246,7 +1231,7 @@ export async function loginStudentAccount(
         return {
           ok: false,
           message:
-            'Username atau Password salah. Periksa kembali huruf besar/kecil pada Password (contoh: Aqua@2601).',
+            'Username atau Password salah. Periksa kembali huruf besar/kecil pada Password.',
         };
       }
 
